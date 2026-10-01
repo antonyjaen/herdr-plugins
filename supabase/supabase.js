@@ -71,7 +71,7 @@ function info() {
 const cmd = process.argv[2] || "menu";
 if (cmd === "open-menu") openMenuPane();
 else if (cmd === "dashboard") dashboard();
-else if (cmd === "menu") menu({ title: "Supabase", brand: "#3ECF8E", info, items });
+else if (cmd === "menu") menu({ title: "supabase", info, items });
 else {
   console.error(`unknown command: ${cmd}`);
   process.exit(2);

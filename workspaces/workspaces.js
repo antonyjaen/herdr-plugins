@@ -248,8 +248,7 @@ function onMenu() {
   const cwd = process.env.HERDR_TARGET_CWD || ctx.workspace_cwd || (workspaceId && workspaceCwd(workspaceId));
   const say = (s) => console.log(`\n  ${s}`);
   menu({
-    title: "Workspaces",
-    brand: "#8DC8C5",
+    title: "workspaces",
     info: () => {
       let layout = "none";
       try {
@@ -283,6 +282,58 @@ function onMenu() {
   });
 }
 
+// ── Switcher: open workspaces + project folders, filter by typing ────────────────
+
+// Project folders: "projects" globs from the config, else git repos next to the open workspaces.
+function projectDirs(config, workspaces) {
+  const roots = config.projects?.length ? config.projects
+    : [...new Set(workspaces.map((w) => path.posix.dirname(norm(w.cwd)) + "/*"))];
+  const dirs = new Set();
+  for (const pattern of roots) {
+    const base = norm(pattern.replace(/^~(?=$|[\\/])/, require("node:os").homedir())).replace(/\/\*+$/, "");
+    let entries = [];
+    try {
+      entries = fs.readdirSync(base, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const e of entries) {
+      const dir = `${base}/${e.name}`;
+      if (e.isDirectory() && !e.name.startsWith(".") && fs.existsSync(`${dir}/.git`)) dirs.add(dir);
+    }
+  }
+  return [...dirs];
+}
+
+function onSwitch() {
+  const config = readJson(configFile, {});
+  const open = herdr("workspace", "list").workspaces.map((w) => ({ ...w, cwd: workspaceCwd(w.workspace_id) }));
+  const openDirs = new Set(open.map((w) => caseFold(norm(w.cwd))));
+  const entries = [
+    ...open.map((w) => ({ name: w.label, dir: w.cwd, id: w.workspace_id, focused: w.focused, agent: w.agent_status })),
+    ...projectDirs(config, open).filter((d) => !openDirs.has(caseFold(d)))
+      .map((d) => ({ name: path.posix.basename(d), dir: d.replace(/\//g, path.sep) })),
+  ];
+  const { pick } = require("./lib");
+  pick({
+    title: "workspaces",
+    entries,
+    render: (e) => [e.id ? (e.focused ? "●" : "○") : " ", e.name, e.dir, e.id ? (e.agent && e.agent !== "unknown" ? e.agent : "") : "open"],
+    choose: (e) => {
+      if (e.id) herdr("workspace", "focus", e.id);
+      else herdr("workspace", "create", "--cwd", e.dir, "--label", e.name, "--focus");
+    },
+  });
+}
+
+function onOpenSwitch() {
+  const res = spawnSync(herdrBin, ["plugin", "pane", "open", "--plugin", process.env.HERDR_PLUGIN_ID, "--entrypoint", "switch"],
+    { encoding: "utf8" });
+  process.stdout.write(res.stdout || "");
+  process.stderr.write(res.stderr || "");
+  process.exit(res.status ?? 1);
+}
+
 function onStartup() {
   const live = new Set(herdr("workspace", "list").workspaces.map((w) => w.workspace_id));
   const applied = loadApplied();
@@ -297,6 +348,8 @@ try {
   else if (cmd === "validate") onValidate();
   else if (cmd === "startup") onStartup();
   else if (cmd === "menu") onMenu();
+  else if (cmd === "switch") onSwitch();
+  else if (cmd === "open-switch") onOpenSwitch();
   else throw new Error(`unknown command: ${cmd}`);
 } catch (err) {
   console.error(err.message);

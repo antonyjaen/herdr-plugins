@@ -78,61 +78,81 @@ function ask(rl, q) {
   return new Promise((resolve) => rl.question(q, resolve));
 }
 
-// ── Menu screen ─────────────────────────────────────────────────────────────────
+
+// ── Screens ─────────────────────────────────────────────────────────────────────
+// Quiet styling in the herdr theme's tones (Zenwritten): plain rows, one accent,
+// no frames or badges, so plugin screens read as part of herdr.
 const ESC = "\x1b[";
 const fg = ([r, g, b]) => `${ESC}38;2;${r};${g};${b}m`;
 const bg = ([r, g, b]) => `${ESC}48;2;${r};${g};${b}m`;
-const RESET = `${ESC}0m`, BOLD = `${ESC}1m`, DIM = `${ESC}2m`;
-const hex = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+const RESET = `${ESC}0m`, BOLD = `${ESC}1m`;
+const TEXT = fg([187, 187, 187]), MUTED = fg([128, 128, 128]), ACCENT = fg([129, 155, 105]), WARN = fg([183, 126, 100]);
+const SEL = bg([44, 44, 44]);
 const visible = (s) => s.replace(/\x1b\[[0-9;]*m/g, "");
 const pad = (s, n) => s + " ".repeat(Math.max(0, n - visible(s).length));
 const cut = (s, n) => (s.length > n ? s.slice(0, Math.max(0, n - 1)) + "…" : s);
 
+// One chunk (fast typing, pasted text) emits several keypresses at once: queue them all.
+const keys = [];
+let wake = null;
+let listening = false;
+
 function readKey() {
-  return new Promise((resolve) => process.stdin.once("keypress", (str, key) => resolve(key || { name: str })));
+  if (keys.length) return Promise.resolve(keys.shift());
+  return new Promise((resolve) => (wake = resolve));
+}
+
+function startRaw() {
+  readline.emitKeypressEvents(process.stdin);
+  if (!listening) {
+    listening = true;
+    process.stdin.on("keypress", (str, key) => {
+      keys.push({ ...(key || {}), str });
+      if (wake) {
+        const w = wake;
+        wake = null;
+        w(keys.shift());
+      }
+    });
+  }
+  keys.length = 0;
+  if (process.stdin.isTTY) process.stdin.setRawMode(true);
+  process.stdin.resume();
+}
+
+function endRaw() {
+  if (process.stdin.isTTY) process.stdin.setRawMode(false);
+  process.stdout.write(`${ESC}?25h${ESC}2J${ESC}H`);
+}
+
+function row(selected, text, width) {
+  return selected ? `${ACCENT}▎${RESET}${SEL}${TEXT}${pad(text, width)}${RESET}` : ` ${text}`;
 }
 
 /**
- * opts: { title, brand: "#rrggbb", info: () => [[label, value, state?]], items: [{ label, hint, run(rl) }] }
- * state: "ok" | "warn" | undefined colours the value dot.
+ * opts: { title, info: () => [[label, value, state?]], items: [{ label, hint, run(rl) }] }
+ * state "ok" | "warn" colours the value.
  */
 async function menu(opts) {
-  const brand = hex(opts.brand);
   const items = opts.items;
   let sel = 0;
-  readline.emitKeypressEvents(process.stdin);
-  const raw = (on) => process.stdin.isTTY && process.stdin.setRawMode(on);
-
   const draw = () => {
-    const cols = Math.max(40, process.stdout.columns || 80);
-    const w = Math.min(cols - 4, 84);
-    const out = [`${ESC}2J${ESC}H${ESC}?25l`, ""];
-    out.push(`  ${bg(brand)}${fg([12, 14, 16])}${BOLD} ${opts.title} ${RESET}`);
-    out.push(`  ${fg(brand)}╭${"─".repeat(w - 2)}╮${RESET}`);
-    for (const [label, value, state] of opts.info()) {
-      const dot = state === "ok" ? `${fg([62, 207, 142])}● ` : state === "warn" ? `${fg([232, 168, 56])}● ` : "";
-      const line = ` ${DIM}${pad(label, 9)}${RESET}${dot}${RESET}${cut(value, w - 16)}`;
-      out.push(`  ${fg(brand)}│${RESET}${pad(line, w - 2)}${fg(brand)}│${RESET}`);
-    }
-    out.push(`  ${fg(brand)}╰${"─".repeat(w - 2)}╯${RESET}`, "");
-    const labelW = Math.max(...items.map((i) => i.label.length)) + 2;
-    items.forEach((it, i) => {
-      const n = `${DIM}${i + 1}${RESET}`;
-      const text = `${pad(it.label, labelW)}${DIM}${cut(it.hint || "", w - labelW - 8)}${RESET}`;
-      out.push(i === sel
-        ? `  ${fg(brand)}▌${RESET}${bg([38, 42, 50])} ${n}${bg([38, 42, 50])}  ${BOLD}${pad(text, w - 6)}${RESET}`
-        : `   ${n}  ${text}`);
-    });
-    out.push("", `  ${DIM}↑↓ move · enter run · 1-${items.length} quick · q quit${RESET}`);
+    const w = Math.min(Math.max(40, process.stdout.columns || 80) - 2, 96);
+    const info = opts.info().map(([label, value, state]) =>
+      `${MUTED}${label}${RESET} ${state === "ok" ? ACCENT : state === "warn" ? WARN : TEXT}${cut(value, w - label.length - 2)}${RESET}`);
+    const labelW = Math.max(...items.map((i) => i.label.length)) + 3;
+    const out = [`${ESC}2J${ESC}H${ESC}?25l`, ` ${BOLD}${TEXT}${opts.title}${RESET}  ${info.join(`${MUTED}  ·  ${RESET}`)}`, ""];
+    items.forEach((it, i) =>
+      out.push(row(i === sel, `${TEXT}${pad(it.label, labelW)}${MUTED}${cut(it.hint || "", w - labelW - 2)}${RESET}`, w)));
+    out.push("", ` ${MUTED}↑↓ select · enter run · q close${RESET}`);
     process.stdout.write(out.join("\n"));
   };
 
-  raw(true);
-  process.stdin.resume();
+  startRaw();
   for (;;) {
     draw();
     const key = await readKey();
-    const name = key.name || key.sequence;
+    const name = key.name || key.str;
     if (name === "q" || name === "escape" || (key.ctrl && name === "c")) break;
     if (name === "up" || name === "k") sel = (sel + items.length - 1) % items.length;
     else if (name === "down" || name === "j") sel = (sel + 1) % items.length;
@@ -140,23 +160,78 @@ async function menu(opts) {
     if (!(name === "return" || name === "enter" || /^[1-9]$/.test(name || ""))) continue;
 
     const item = items[sel];
-    raw(false);
-    process.stdout.write(`${ESC}2J${ESC}H${ESC}?25h\n  ${bg(brand)}${fg([12, 14, 16])}${BOLD} ${opts.title} ${RESET} ${BOLD}${item.label}${RESET}\n`);
+    if (process.stdin.isTTY) process.stdin.setRawMode(false);
+    process.stdout.write(`${ESC}2J${ESC}H${ESC}?25h ${BOLD}${TEXT}${opts.title}${RESET} ${MUTED}›${RESET} ${TEXT}${item.label}${RESET}\n`);
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
     try {
       await item.run(rl);
     } catch (err) {
-      process.stdout.write(`\n  ${fg([232, 110, 110])}✖ ${err.message}${RESET}\n`);
+      process.stdout.write(`\n ${WARN}${err.message}${RESET}\n`);
     }
     rl.close();
-    process.stdout.write(`\n  ${DIM}press any key to return${RESET}`);
-    raw(true);
-    process.stdin.resume();
+    process.stdout.write(`\n ${MUTED}any key to go back${RESET}`);
+    startRaw();
     await readKey();
   }
-  raw(false);
-  process.stdout.write(`${ESC}?25h${ESC}2J${ESC}H`);
+  endRaw();
   process.exit(0);
 }
 
-module.exports = { context, targetCwd, findUp, run, openUrl, openMenuPane, ask, menu };
+/**
+ * Filterable list: type to filter, ↑↓ to move, enter to choose, esc to close.
+ * opts: { title, entries, render: (e) => [mark, name, detail, tag], choose: (e) => void }
+ */
+async function pick(opts) {
+  let query = "", sel = 0;
+  const matches = () => {
+    const q = query.toLowerCase();
+    return opts.entries.filter((e) => opts.render(e).slice(1, 3).join(" ").toLowerCase().includes(q));
+  };
+  const draw = (list) => {
+    const w = Math.min(Math.max(40, process.stdout.columns || 80) - 2, 110);
+    const rows = Math.max(3, (process.stdout.rows || 24) - 5);
+    const nameW = Math.min(28, Math.max(8, ...opts.entries.map((e) => opts.render(e)[1].length)) + 2);
+    const first = Math.max(0, Math.min(sel - rows + 1, list.length - rows));
+    const out = [`${ESC}2J${ESC}H${ESC}?25l`, ` ${BOLD}${TEXT}${opts.title}${RESET}  ${ACCENT}›${RESET} ${TEXT}${query}${RESET}${ACCENT}▏${RESET}`, ""];
+    list.slice(first, first + rows).forEach((e, i) => {
+      const [mark, name, detail, tag] = opts.render(e);
+      const text = `${ACCENT}${mark}${RESET} ${TEXT}${pad(cut(name, nameW - 1), nameW)}${MUTED}${cut(detail, w - nameW - 14)}${RESET}`;
+      out.push(row(first + i === sel, pad(text, w - 10) + `${MUTED}${tag || ""}${RESET}`, w));
+    });
+    if (!list.length) out.push(` ${MUTED}no match${RESET}`);
+    out.push("", ` ${MUTED}type to filter · ↑↓ select · enter switch · esc close${RESET}`);
+    process.stdout.write(out.join("\n"));
+  };
+
+  startRaw();
+  for (;;) {
+    const list = matches();
+    sel = Math.min(sel, Math.max(0, list.length - 1));
+    draw(list);
+    const key = await readKey();
+    const name = key.name;
+    if (name === "escape" || (key.ctrl && name === "c")) break;
+    if (name === "up") sel = Math.max(0, sel - 1);
+    else if (name === "down") sel = Math.min(list.length - 1, sel + 1);
+    else if (name === "backspace") query = query.slice(0, -1);
+    else if (name === "return" || name === "enter") {
+      if (list[sel]) {
+        endRaw();
+        try {
+          opts.choose(list[sel]);
+        } catch (err) {
+          console.error(err.message);
+          await new Promise((r) => setTimeout(r, 2500));
+        }
+        process.exit(0);
+      }
+    } else if (key.str && key.str.length === 1 && key.str >= " " && !key.ctrl && !key.meta) {
+      query += key.str;
+      sel = 0;
+    }
+  }
+  endRaw();
+  process.exit(0);
+}
+
+module.exports = { context, targetCwd, findUp, run, openUrl, openMenuPane, ask, menu, pick };

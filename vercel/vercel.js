@@ -53,7 +53,7 @@ function info() {
 const cmd = process.argv[2] || "menu";
 if (cmd === "open-menu") openMenuPane();
 else if (cmd === "dashboard") process.exit(run("vercel", ["open"], project().root));
-else if (cmd === "menu") menu({ title: "▲ Vercel", brand: "#EDEDED", info, items });
+else if (cmd === "menu") menu({ title: "vercel", info, items });
 else {
   console.error(`unknown command: ${cmd}`);
   process.exit(2);

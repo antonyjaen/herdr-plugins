@@ -129,6 +129,10 @@ Put layouts in `$(herdr plugin config-dir antonyjaen.workspaces)/workspaces.json
   `right` or `down`; `ratio` sizes the split; `cwd` is relative to the tab's.
 - A fresh workspace's first tab is reused; layouts never touch a workspace
   that already has more than one pane, and apply only once per workspace.
+- **Workspaces: switch** pops up every open workspace plus the project folders
+  next to them (git repos; set `"projects": ["~/code/*"]` to choose the roots).
+  Type to filter, Enter jumps there, or opens the project as a new workspace.
+  Bind it to a key, e.g. `key = "prefix+w"` with `command = "antonyjaen.workspaces.switch"`.
 - Re-applying only adds the layout's missing tabs (matched by label), so it is
   safe to run any time.
 - The plugin's own screen (`{ "plugin": "antonyjaen.workspaces" }` as a tab,

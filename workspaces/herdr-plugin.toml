@@ -28,6 +28,21 @@ width = "85%"
 height = "80%"
 command = ["node", "workspaces.js", "menu"]
 
+[[panes]]
+id = "switch"
+title = "Switch workspace"
+placement = "popup"
+width = "70%"
+height = "60%"
+command = ["node", "workspaces.js", "switch"]
+
+[[actions]]
+id = "switch"
+title = "Workspaces: switch"
+description = "Pop up open workspaces and project folders; Enter jumps there (opening the project if needed)."
+contexts = ["workspace", "pane", "global"]
+command = ["node", "workspaces.js", "open-switch"]
+
 [[actions]]
 id = "apply"
 title = "Workspaces: apply layout"
