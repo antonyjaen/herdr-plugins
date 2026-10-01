@@ -65,6 +65,7 @@ as usual.
 | Alt+← / Alt+→, or ‹ › | Back / forward |
 | Ctrl+R, or ⟳ | Reload |
 | Ctrl+= / Ctrl+- / Ctrl+0 | Zoom (narrower viewport = bigger text) |
+| Ctrl+T | Toggle crisp text (page text drawn as real characters, browsh-style) vs pure image |
 | Ctrl+Q | Quit |
 
 Goals run on [jev-ultrafast](https://github.com/browser-use/jev-ultrafast):

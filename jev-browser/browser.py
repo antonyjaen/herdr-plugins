@@ -173,6 +173,47 @@ import term  # noqa: E402
 # ── Rendering ────────────────────────────────────────────────────────────────────
 
 KITTY_ID = 7171
+
+# Visible words with their box and colour, viewport coordinates, capped for huge pages.
+TEXT_JS = r"""(() => {
+  const out = [], W = innerWidth, H = innerHeight, range = document.createRange();
+  const rgb = (c) => (c.match(/[\d.]+/g) || [0, 0, 0]).slice(0, 3).map(Number);
+  const push = (x, y, h, color, text) => { const [r, g, b] = rgb(color); out.push([x, y, h, r, g, b, text]); };
+  const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT);
+  while (walker.nextNode() && out.length < 6000) {
+    const node = walker.currentNode, text = node.textContent;
+    if (!text.trim()) continue;
+    const el = node.parentElement;
+    if (!el || el.closest('script,style,noscript,svg')) continue;
+    const box = el.getBoundingClientRect();
+    if (box.bottom < 0 || box.top > H || box.right < 0 || box.left > W) continue;
+    if (box.width <= 2 || box.height <= 2) continue;  // visually-hidden (screen-reader only) text
+    const cs = getComputedStyle(el);
+    if (cs.visibility === 'hidden' || +cs.opacity === 0) continue;
+    const re = /\S+/g; let m;
+    while ((m = re.exec(text))) {
+      range.setStart(node, m.index); range.setEnd(node, m.index + m[0].length);
+      const r = range.getBoundingClientRect();
+      if (r.width && r.bottom > 0 && r.top < H && r.right > 0 && r.left < W) push(r.left, r.top, r.height, cs.color, m[0]);
+    }
+  }
+  for (const el of document.querySelectorAll('input:not([type=hidden]):not([type=checkbox]):not([type=radio]),textarea,select')) {
+    const r = el.getBoundingClientRect();
+    if (!r.width || r.bottom < 0 || r.top > H) continue;
+    const cs = getComputedStyle(el);
+    const value = el.tagName === 'SELECT' ? (el.selectedOptions[0]?.text || '') : el.type === 'password' ? '•'.repeat(el.value.length) : el.value;
+    const shown = value || el.placeholder || '';
+    if (shown) push(r.left + parseFloat(cs.paddingLeft || 0), r.top + (r.height - parseFloat(cs.fontSize || 16)) / 2,
+      parseFloat(cs.fontSize || 16), value ? cs.color : 'rgb(140,140,140)', shown.slice(0, 200));
+  }
+  return out;
+})()"""
+HIDE_TEXT = r"""(() => { if (document.getElementById('__jev_hide')) return;
+  const s = document.createElement('style'); s.id = '__jev_hide';
+  s.textContent = '*,*::before,*::after{color:transparent!important;-webkit-text-fill-color:transparent!important;' +
+    'text-shadow:none!important;caret-color:transparent!important}::placeholder{color:transparent!important}';
+  (document.head || document.documentElement).appendChild(s); })()"""
+SHOW_TEXT = "document.getElementById('__jev_hide')?.remove()"
 DEBUG_LOG = os.environ.get("JEV_DEBUG_LOG")
 
 
@@ -201,7 +242,8 @@ class Screen:
         self.kitty = kitty
         self.prev = []
 
-    def draw(self, img, top, cols, rows):
+    def draw(self, img, top, cols, rows, text=None):
+        """`text` maps row -> {col: (char, (r, g, b))}: real characters drawn over the blocks."""
         if self.kitty:
             return self.draw_kitty(img, top, cols, rows)
         img = img.convert("RGB").resize((cols, rows * 2), Image.Resampling.LANCZOS)
@@ -209,13 +251,22 @@ class Screen:
         lines, stride = [], cols * 3
         for r in range(rows):
             up, lo = px[2 * r * stride:(2 * r + 1) * stride], px[(2 * r + 1) * stride:(2 * r + 2) * stride]
+            chars = (text or {}).get(r, {})
             parts, last = [], None
-            for x in range(0, stride, 3):
-                cell = (up[x], up[x + 1], up[x + 2], lo[x], lo[x + 1], lo[x + 2])
-                if cell != last:
-                    parts.append("\x1b[38;2;%d;%d;%dm\x1b[48;2;%d;%d;%dm" % cell)
-                    last = cell
-                parts.append("▀")
+            for c, x in enumerate(range(0, stride, 3)):
+                if c in chars:
+                    ch, (fr, fg, fb) = chars[c]
+                    # The cell's background is the (text-free) page colour behind the glyph.
+                    br, bgc, bb = (up[x] + lo[x]) // 2, (up[x + 1] + lo[x + 1]) // 2, (up[x + 2] + lo[x + 2]) // 2
+                    if abs((fr + fg + fb) - (br + bgc + bb)) < 120:  # too little contrast: pick black/white
+                        fr = fg = fb = 15 if br + bgc + bb > 382 else 240
+                    cell = (fr, fg, fb, br, bgc, bb, ch)
+                else:
+                    cell = (up[x], up[x + 1], up[x + 2], lo[x], lo[x + 1], lo[x + 2], "▀")
+                if cell[:6] != (last or (None,))[:6]:
+                    parts.append("\x1b[38;2;%d;%d;%dm\x1b[48;2;%d;%d;%dm" % cell[:6])
+                last = cell
+                parts.append(cell[6])
             lines.append("".join(parts))
         if len(self.prev) != rows:
             self.prev = [None] * rows
@@ -265,6 +316,7 @@ class TerminalBrowser:
         self.screen = Screen(kitty_supported(t))
         self.tab = Browser(HOME_URL)
         self.zoom = 1.0
+        self.crisp = os.environ.get("JEV_TEXT", "1") != "0"  # real characters for page text
         self.mode = "page"  # page | address | goal
         self.edit = ""
         self.status = HELP
@@ -280,7 +332,9 @@ class TerminalBrowser:
         self.page_rows = max(4, self.rows - 2)
         # Square pixels in half-block mode: 1 cell = 1 px wide, 2 px tall. ~4 CSS px per cell keeps
         # body text a few cells tall; kitty graphics show real pixels, so they can afford a wider page.
-        per_cell = 9 if self.screen.kitty else 4
+        # Text mode wants one character per cell (~8 CSS px, a normal glyph width); blocks-only mode
+        # needs a narrower page so text stays a few cells tall; kitty shows real pixels.
+        per_cell = 9 if self.screen.kitty else 8 if self.crisp else 4
         width = max(360, min(2400, round(self.cols * per_cell / self.zoom)))
         self.vw, self.vh = width, max(240, round(width * self.page_rows * 2 / self.cols))
         self.apply_viewport(self.tab)
@@ -323,17 +377,46 @@ class TerminalBrowser:
         # Half-blocks need only cols x 2*rows pixels: let Chrome downscale instead of shipping full frames.
         # 2x the target size, then a Lanczos downscale here: sharper than Chrome's own scaling.
         scale = 1 if self.screen.kitty else min(1.0, 2 * self.cols / self.vw)
+        crisp = self.crisp and not self.screen.kitty
+        tab = self.tab
         try:
-            shot = self.tab.call("Page.captureScreenshot", format="jpeg", quality=80, optimizeForSpeed=True,
-                                 clip={"x": 0, "y": 0, "width": self.vw, "height": self.vh, "scale": scale})["data"]
+            # Text mode (like browsh): read where every visible word sits, then capture the page with
+            # its text hidden so the blocks carry only backgrounds and images.
+            words = tab.evaluate(TEXT_JS) if crisp else None
+            if crisp:
+                tab.evaluate(HIDE_TEXT)
+            try:
+                shot = tab.call("Page.captureScreenshot", format="jpeg", quality=80, optimizeForSpeed=True,
+                                clip={"x": 0, "y": 0, "width": self.vw, "height": self.vh, "scale": scale})["data"]
+            finally:
+                if crisp:
+                    tab.evaluate(SHOW_TEXT)
         except Exception:
             return
-        digest = hashlib.sha1(shot.encode()).digest()
+        digest = hashlib.sha1((shot + repr(words)).encode()).digest()
         if digest == self.last_hash and not force:
             return
         self.last_hash = digest
         img = Image.open(io.BytesIO(base64.b64decode(shot)))
-        self.screen.draw(img, 1, self.cols, self.page_rows)
+        self.screen.draw(img, 1, self.cols, self.page_rows, self.place_text(words) if words else None)
+
+    def place_text(self, words):
+        """Map [x, y, h, r, g, b, text] word boxes (CSS px) onto the cell grid."""
+        cw, ch = self.vw / self.cols, self.vh / self.page_rows
+        grid, cursor = {}, {}
+        # Left to right per row; page fonts run a little narrower than a cell, so each word starts
+        # at its own position or one space after the previous word, whichever is further right.
+        placed = sorted(((int((y + h / 2) // ch), x, w) for x, y, h, *w in words), key=lambda t: (t[0], t[1]))
+        for row, x, (r, g, b, word) in placed:
+            if not 0 <= row < self.page_rows:
+                continue
+            col = max(int(round(x / cw)), cursor.get(row, -2) + 2)
+            cells = grid.setdefault(row, {})
+            for i, char in enumerate(word):
+                if col + i < self.cols and char.isprintable():
+                    cells[col + i] = (char, (r, g, b))
+            cursor[row] = col + len(word) - 1
+        return grid
 
     # ── actions ──
     def navigate(self, raw):
@@ -440,6 +523,9 @@ class TerminalBrowser:
                 self.history(-1)
             elif name in {"alt+right"}:
                 self.history(1)
+            elif name == "ctrl+t":  # toggle real-text rendering vs pure blocks
+                self.crisp = not self.crisp
+                self.layout()
             elif name in {"ctrl+r", "f5"}:
                 self.tab.call("Page.reload")
             elif name in {"ctrl+=", "ctrl++", "ctrl+-", "ctrl+0"}:
