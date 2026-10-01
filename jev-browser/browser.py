@@ -197,16 +197,30 @@ TEXT_JS = r"""(() => {
       if (r.width && r.bottom > 0 && r.top < H && r.right > 0 && r.left < W) push(r.left, r.top, r.height, cs.color, m[0]);
     }
   }
-  for (const el of document.querySelectorAll('input:not([type=hidden]):not([type=checkbox]):not([type=radio]),textarea,select')) {
+  // Form controls: their 1px borders vanish when the page is shrunk to cells, so report them
+  // ([kind, x, y, w, h, checked]) for the renderer to draw explicitly.
+  const controls = [];
+  for (const el of document.querySelectorAll('input:not([type=hidden]),textarea,select,button,[role=button],[role=checkbox],[role=radio]')) {
     const r = el.getBoundingClientRect();
-    if (!r.width || r.bottom < 0 || r.top > H) continue;
+    if (r.width < 2 || r.height < 2 || r.bottom < 0 || r.top > H || r.right < 0 || r.left > W) continue;
     const cs = getComputedStyle(el);
-    const value = el.tagName === 'SELECT' ? (el.selectedOptions[0]?.text || '') : el.type === 'password' ? '•'.repeat(el.value.length) : el.value;
-    const shown = value || el.placeholder || '';
-    if (shown) push(r.left + parseFloat(cs.paddingLeft || 0), r.top + (r.height - parseFloat(cs.fontSize || 16)) / 2,
-      parseFloat(cs.fontSize || 16), value ? cs.color : 'rgb(140,140,140)', shown.slice(0, 200));
+    if (cs.visibility === 'hidden' || +cs.opacity === 0) continue;
+    const type = (el.getAttribute('type') || '').toLowerCase(), role = el.getAttribute('role');
+    const kind = type === 'checkbox' || role === 'checkbox' ? 'check' : type === 'radio' || role === 'radio' ? 'radio'
+      : el.tagName === 'SELECT' ? 'select' : el.tagName === 'BUTTON' || role === 'button' || ['submit', 'button', 'reset'].includes(type) ? 'button' : 'field';
+    const checked = el.checked || el.getAttribute('aria-checked') === 'true';
+    controls.push([kind, r.left, r.top, r.width, r.height, checked ? 1 : 0]);
+    if (kind === 'field' || kind === 'select') {
+      const value = el.tagName === 'SELECT' ? (el.selectedOptions[0]?.text || '') : type === 'password' ? '•'.repeat(el.value.length) : el.value;
+      const shown = value || el.placeholder || '';
+      if (shown) push(r.left + parseFloat(cs.paddingLeft || 0), r.top + (r.height - parseFloat(cs.fontSize || 16)) / 2,
+        parseFloat(cs.fontSize || 16), value ? cs.color : 'rgb(140,140,140)', shown.slice(0, 200));
+    }
   }
-  return out;
+  // Pages lazy-load images as they scroll into view, but a headless background tab never counts
+  // as "in view": load them up front.
+  for (const el of document.querySelectorAll('img[loading=lazy],iframe[loading=lazy]')) el.loading = 'eager';
+  return {w: out, c: controls, s: [scrollX, scrollY]};
 })()"""
 HIDE_TEXT = r"""(() => { if (document.getElementById('__jev_hide')) return;
   const s = document.createElement('style'); s.id = '__jev_hide';
@@ -231,6 +245,8 @@ GRID_TEXT = r"""((cw, ch) => {
     'px!important;line-height:' + ch + 'px!important;letter-spacing:' + spacing.toFixed(2) + 'px!important;word-spacing:0!important}';
 })(%s, %s)"""
 UNGRID_TEXT = "document.getElementById('__jev_grid')?.remove()"
+EAGER_IMAGES = ("(document.querySelectorAll('img[loading=lazy],iframe[loading=lazy]').forEach(e => e.loading = 'eager'),"
+                " {s: [scrollX, scrollY]})")
 DEBUG_LOG = os.environ.get("JEV_DEBUG_LOG")
 
 
@@ -259,27 +275,50 @@ class Screen:
         self.kitty = kitty
         self.prev = []
 
+    # Quadrant glyph per 2x2 mask (bit 0 = top-left, 1 = top-right, 2 = bottom-left, 3 = bottom-right).
+    QUADS = " ▘▝▀▖▌▞▛▗▚▐▜▄▙▟█"
+
     def draw(self, img, top, cols, rows, text=None):
-        """`text` maps row -> {col: (char, (r, g, b))}: real characters drawn over the blocks."""
+        """`text` maps row -> {col: (char, (r, g, b), bg or None)}: real characters over the picture.
+        The picture uses quadrant blocks: 2x2 pixels per cell, split into the two best colours."""
         if self.kitty:
             return self.draw_kitty(img, top, cols, rows)
-        img = img.convert("RGB").resize((cols, rows * 2), Image.Resampling.LANCZOS)
+        w = cols * 2
+        img = img.convert("RGB").resize((w, rows * 2), Image.Resampling.LANCZOS)
         px = img.tobytes()
-        lines, stride = [], cols * 3
+        lines, stride, quads = [], w * 3, self.QUADS
         for r in range(rows):
             up, lo = px[2 * r * stride:(2 * r + 1) * stride], px[(2 * r + 1) * stride:(2 * r + 2) * stride]
             chars = (text or {}).get(r, {})
             parts, last = [], None
-            for c, x in enumerate(range(0, stride, 3)):
+            for c in range(cols):
+                x = c * 6
+                quad = (up[x:x + 3], up[x + 3:x + 6], lo[x:x + 3], lo[x + 3:x + 6])
+                avg = tuple((quad[0][i] + quad[1][i] + quad[2][i] + quad[3][i]) // 4 for i in range(3))
                 if c in chars:
-                    ch, (fr, fg, fb) = chars[c]
-                    # The cell's background is the (text-free) page colour behind the glyph.
-                    br, bgc, bb = (up[x] + lo[x]) // 2, (up[x + 1] + lo[x + 1]) // 2, (up[x + 2] + lo[x + 2]) // 2
+                    ch, fgc, bg = chars[c]
+                    if bg == "field":  # form fields: a shade off the page colour, lighter on dark pages
+                        d = -18 if sum(avg) > 382 else 26
+                        bg = tuple(max(0, min(255, v + d)) for v in avg)
+                    br, bgc, bb = bg or avg  # the (text-free) page colour behind the glyph
+                    fr, fg, fb = (tuple(max(0, min(255, v + (-90 if sum(avg) > 382 else 90))) for v in avg)
+                                  if fgc == "edge" else fgc)
                     if abs((fr + fg + fb) - (br + bgc + bb)) < 120:  # too little contrast: pick black/white
                         fr = fg = fb = 15 if br + bgc + bb > 382 else 240
                     cell = (fr, fg, fb, br, bgc, bb, ch)
                 else:
-                    cell = (up[x], up[x + 1], up[x + 2], lo[x], lo[x + 1], lo[x + 2], "▀")
+                    # Split the four pixels by brightness; each half gets its mean colour.
+                    lum = [p[0] * 2 + p[1] * 5 + p[2] for p in quad]
+                    mid = sum(lum) / 4
+                    mask = sum(1 << i for i in range(4) if lum[i] > mid)
+                    if mask in (0, 15) or max(lum) - min(lum) < 48:
+                        cell = (*avg, *avg, " ")
+                    else:
+                        hi = [quad[i] for i in range(4) if mask >> i & 1]
+                        low = [quad[i] for i in range(4) if not mask >> i & 1]
+                        fcol = tuple(sum(p[i] for p in hi) // len(hi) for i in range(3))
+                        bcol = tuple(sum(p[i] for p in low) // len(low) for i in range(3))
+                        cell = (*fcol, *bcol, quads[mask])
                 if cell[:6] != (last or (None,))[:6]:
                     parts.append("\x1b[38;2;%d;%d;%dm\x1b[48;2;%d;%d;%dm" % cell[:6])
                 last = cell
@@ -403,12 +442,15 @@ class TerminalBrowser:
                 tab.evaluate(GRID_TEXT % (round(self.vw / self.cols, 3), round(self.vh / self.page_rows, 3)))
             else:
                 tab.evaluate(UNGRID_TEXT)
-            words = tab.evaluate(TEXT_JS) if crisp else None
+            words = tab.evaluate(TEXT_JS) if crisp else tab.evaluate(EAGER_IMAGES)
             if crisp:
                 tab.evaluate(HIDE_TEXT)
+            # The clip is in document coordinates: start it where the page is scrolled to, or the
+            # picture shows the top of the page under text from further down.
+            sx, sy = (words or {}).get("s") or (0, 0)
             try:
                 shot = tab.call("Page.captureScreenshot", format="jpeg", quality=80, optimizeForSpeed=True,
-                                clip={"x": 0, "y": 0, "width": self.vw, "height": self.vh, "scale": scale})["data"]
+                                clip={"x": sx, "y": sy, "width": self.vw, "height": self.vh, "scale": scale})["data"]
             finally:
                 if crisp:
                     tab.evaluate(SHOW_TEXT)
@@ -419,24 +461,43 @@ class TerminalBrowser:
             return
         self.last_hash = digest
         img = Image.open(io.BytesIO(base64.b64decode(shot)))
-        self.screen.draw(img, 1, self.cols, self.page_rows, self.place_text(words) if words else None)
+        self.screen.draw(img, 1, self.cols, self.page_rows, self.place_text(words) if crisp and words else None)
 
-    def place_text(self, words):
-        """Map [x, y, h, r, g, b, text] word boxes (CSS px) onto the cell grid."""
+    def place_text(self, page):
+        """Map the page script's word boxes and form controls (CSS px) onto the cell grid."""
         cw, ch = self.vw / self.cols, self.vh / self.page_rows
         grid, cursor = {}, {}
-        # Left to right per row; page fonts run a little narrower than a cell, so each word starts
-        # at its own position or one space after the previous word, whichever is further right.
-        placed = sorted(((int((y + h / 2) // ch), x, w) for x, y, h, *w in words), key=lambda t: (t[0], t[1]))
+        put = lambda row, col, cell: 0 <= row < self.page_rows and 0 <= col < self.cols and grid.setdefault(row, {}).__setitem__(col, cell)  # noqa: E731
+
+        # Controls first, words on top. Fields get a visible fill (their borders don't survive the
+        # shrink), selects a ▾, checkboxes/radios an ASCII box so no font can widen them.
+        for kind, x, y, w, h, checked in page.get("c", []):
+            c0, c1 = int(x // cw), max(int(x // cw), int((x + w - 1) // cw))
+            r0, r1 = int(y // ch), max(int(y // ch), int((y + h - 1) // ch))
+            if kind in ("check", "radio"):
+                mark = ("[x]" if checked else "[ ]") if kind == "check" else ("(•)" if checked else "( )")
+                for i, glyph in enumerate(mark):
+                    put((r0 + r1) // 2, c0 + i, (glyph, (200, 200, 200), None))
+            elif kind in ("field", "select"):
+                for row in range(r0, r1 + 1):
+                    for col in range(c0, c1 + 1):
+                        put(row, col, (" ", (0, 0, 0), "field"))
+                    put(row, c0, ("▏", "edge", "field"))
+                    put(row, c1, ("▕" if kind == "field" else " ", "edge", "field"))
+                if kind == "select":
+                    put((r0 + r1) // 2, c1 - 1, ("▾", "edge", "field"))
+
+        # Words left to right per row, each at its own cell or one space after the previous word.
+        placed = sorted(((int((y + h / 2) // ch), x, w) for x, y, h, *w in page.get("w", [])), key=lambda t: (t[0], t[1]))
         for row, x, (r, g, b, word) in placed:
             if not 0 <= row < self.page_rows:
                 continue
-            # With the grid font a word starts on a whole cell; the cursor only guards odd fonts (icons, CJK).
-            col = max(int(round(x / cw)), cursor.get(row, -1) + 1)
-            cells = grid.setdefault(row, {})
+            col = max(int(round(x / cw)), cursor.get(row, -2) + 2)
+            under = grid.get(row, {})
             for i, char in enumerate(word):
                 if col + i < self.cols and char.isprintable():
-                    cells[col + i] = (char, (r, g, b))
+                    bg = under.get(col + i, (None, None, None))[2]  # keep a field's fill behind its text
+                    put(row, col + i, (char, (r, g, b), bg))
             cursor[row] = col + len(word) - 1
         return grid
 
