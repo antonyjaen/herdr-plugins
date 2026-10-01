@@ -2,14 +2,13 @@
 
 [herdr](https://herdr.dev) plugins that run on Windows, macOS and Linux alike:
 the Supabase and Vercel CLIs one action away, scoped to the project in the
-focused pane, and a browser pane driven by hand or by goals.
+focused pane, plus declarative workspace layouts.
 
 ## Install
 
 ```sh
 herdr plugin install antonyjaen/herdr-plugins/supabase
 herdr plugin install antonyjaen/herdr-plugins/vercel
-herdr plugin install antonyjaen/herdr-plugins/jev-browser
 herdr plugin install antonyjaen/herdr-plugins/workspaces
 ```
 
@@ -48,46 +47,6 @@ command = "antonyjaen.supabase.menu"
 description = "Supabase menu"
 ```
 
-## Jev Browser
-
-A browser that lives in the terminal. **Jev Browser: open** splits a pane
-beside the focused one; a headless Chrome (own profile under the plugin state
-dir, debugging port on 127.0.0.1, no window) renders the page straight into
-the pane: real pixels via kitty graphics when herdr's host terminal supports
-them (Ghostty, Kitty, WezTerm on macOS/Linux), truecolor half-blocks
-everywhere else, including Windows. Click, drag, scroll and type in the page
-as usual.
-
-| Key | Does |
-| --- | --- |
-| Ctrl+L, or click the address | Edit the address (URL or search words), Enter to go |
-| Ctrl+G | Give the agent a goal; Esc stops it after the current step |
-| Alt+← / Alt+→, or ‹ › | Back / forward |
-| Ctrl+R, or ⟳ | Reload |
-| Ctrl+= / Ctrl+- / Ctrl+0 | Zoom (narrower viewport = bigger text) |
-| Ctrl+T | Toggle crisp text (page text drawn as real characters, browsh-style) vs pure image |
-| Ctrl+Q | Quit |
-
-Goals run on [jev-ultrafast](https://github.com/browser-use/jev-ultrafast):
-[TypeSafe Jev](https://docs.typesafe.ai/introduction) picks each action and
-element from the page's control list, and a small OpenAI-compatible LLM writes
-text only when a field needs typing. You watch it work in the pane.
-`JEV_HOME` sets the start page (default DuckDuckGo).
-
-Requires [`uv`](https://docs.astral.sh/uv/), `node` and Google Chrome or
-Chromium (set `JEV_CHROME` if it isn't found). Put keys in the environment or
-in `$(herdr plugin config-dir antonyjaen.jev-browser)/.env`:
-
-```sh
-TYPESAFE_API_KEY=...
-TEXT_MODEL_API_KEY=...                        # e.g. OpenRouter or MiniMax
-TEXT_MODEL_BASE_URL=https://openrouter.ai/api/v1
-TEXT_MODEL=inception/mercury-2.5
-```
-
-MiniMax works too (`TEXT_MODEL_BASE_URL=https://api.minimax.io/v1`,
-`TEXT_MODEL=MiniMax-M2.7-highspeed`); the plugin asks it to keep its reasoning
-out of the answer.
 
 ## Workspaces
 
@@ -119,8 +78,7 @@ Put layouts in `$(herdr plugin config-dir antonyjaen.workspaces)/workspaces.json
 ```
 
 - A tab can host another plugin's pane instead of panes, e.g.
-  `{ "label": "browser", "plugin": "antonyjaen.jev-browser", "entrypoint": "browser" }`
-  or `{ "label": "supabase", "plugin": "antonyjaen.supabase", "when": "supabase" }`.
+  `{ "label": "supabase", "plugin": "antonyjaen.supabase", "when": "supabase" }`.
   `when` names a path under the workspace that must exist for the tab to open.
 - A project can carry its own `.herdr/layout.json` (one layout, `{ "tabs": [...] }`);
   it wins over the rules.
@@ -147,11 +105,6 @@ Nothing here changes remote state: no `db push`/`db reset`, no deploys, no env
 var writes. `vercel env pull` only writes a local file, asks before
 overwriting, and accepts plain relative paths only.
 
-Jev Browser's Chrome profile is separate from your everyday one, but goals act
-on real sites: the agent clicks and types for you, and only stops at `DONE`,
-`BLOCKED`, Ctrl+C or its step budget. Chrome's debugging port listens on
-127.0.0.1 without authentication while that Chrome is running, so any local
-program can drive it.
 
 ## License
 
