@@ -214,6 +214,23 @@ HIDE_TEXT = r"""(() => { if (document.getElementById('__jev_hide')) return;
     'text-shadow:none!important;caret-color:transparent!important}::placeholder{color:transparent!important}';
   (document.head || document.documentElement).appendChild(s); })()"""
 SHOW_TEXT = "document.getElementById('__jev_hide')?.remove()"
+
+# Lay text out on the terminal's grid (as browsh does): a monospace font whose advance is exactly one
+# cell and a line height of exactly one row, so every word lands on whole cells and lines don't
+# alternate between one and two rows apart. {cw}/{ch} are CSS px per cell / per row.
+GRID_TEXT = r"""((cw, ch) => {
+  let s = document.getElementById('__jev_grid');
+  if (s && s.dataset.cw == cw && s.dataset.ch == ch) return;
+  if (!s) { s = document.createElement('style'); s.id = '__jev_grid'; (document.head || document.documentElement).appendChild(s); }
+  const probe = document.createElement('span');
+  probe.style.cssText = 'font:' + Math.round(ch * 0.8) + 'px monospace;position:absolute;visibility:hidden;white-space:pre';
+  probe.textContent = 'MMMMMMMMMM'; document.documentElement.appendChild(probe);
+  const spacing = cw - probe.getBoundingClientRect().width / 10; probe.remove();
+  s.dataset.cw = cw; s.dataset.ch = ch;
+  s.textContent = 'body,body *:not(svg):not(svg *){font-family:monospace!important;font-size:' + Math.round(ch * 0.8) +
+    'px!important;line-height:' + ch + 'px!important;letter-spacing:' + spacing.toFixed(2) + 'px!important;word-spacing:0!important}';
+})(%s, %s)"""
+UNGRID_TEXT = "document.getElementById('__jev_grid')?.remove()"
 DEBUG_LOG = os.environ.get("JEV_DEBUG_LOG")
 
 
@@ -382,6 +399,10 @@ class TerminalBrowser:
         try:
             # Text mode (like browsh): read where every visible word sits, then capture the page with
             # its text hidden so the blocks carry only backgrounds and images.
+            if crisp:
+                tab.evaluate(GRID_TEXT % (round(self.vw / self.cols, 3), round(self.vh / self.page_rows, 3)))
+            else:
+                tab.evaluate(UNGRID_TEXT)
             words = tab.evaluate(TEXT_JS) if crisp else None
             if crisp:
                 tab.evaluate(HIDE_TEXT)
@@ -410,7 +431,8 @@ class TerminalBrowser:
         for row, x, (r, g, b, word) in placed:
             if not 0 <= row < self.page_rows:
                 continue
-            col = max(int(round(x / cw)), cursor.get(row, -2) + 2)
+            # With the grid font a word starts on a whole cell; the cursor only guards odd fonts (icons, CJK).
+            col = max(int(round(x / cw)), cursor.get(row, -1) + 1)
             cells = grid.setdefault(row, {})
             for i, char in enumerate(word):
                 if col + i < self.cols and char.isprintable():
