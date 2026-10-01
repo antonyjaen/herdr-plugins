@@ -129,8 +129,12 @@ Put layouts in `$(herdr plugin config-dir antonyjaen.workspaces)/workspaces.json
   `right` or `down`; `ratio` sizes the split; `cwd` is relative to the tab's.
 - A fresh workspace's first tab is reused; layouts never touch a workspace
   that already has more than one pane, and apply only once per workspace.
-- **Workspaces: validate config** checks the file and shows which layout the
-  current workspace gets.
+- Re-applying only adds the layout's missing tabs (matched by label), so it is
+  safe to run any time.
+- The plugin's own screen (`{ "plugin": "antonyjaen.workspaces" }` as a tab,
+  or the `menu` pane) shows the current workspace's layout and offers: add
+  missing tabs here or in every workspace, list layouts, validate, and open
+  `workspaces.json` in `$VISUAL`/`$EDITOR` (Notepad / `open` / `xdg-open` otherwise).
 
 ## Safety
 

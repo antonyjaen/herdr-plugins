@@ -33,25 +33,27 @@ async function envPull(rl) {
 }
 
 const items = [
-  { label: "Recent deployments (vercel ls)", run: vc("ls") },
-  { label: "Link this directory to a project (vercel link)", run: vc("link") },
-  { label: "Environment variables (vercel env ls)", run: vc("env", "ls") },
-  { label: "Pull development env into a file (vercel env pull)", run: envPull },
-  { label: "Open dashboard in browser (vercel open)", run: vc("open") },
-  { label: "Who am I (vercel whoami)", run: vc("whoami") },
-  { label: "Log in (vercel login)", run: vc("login") },
+  { label: "Deployments", hint: "recent deployments — vercel ls", run: vc("ls") },
+  { label: "Link directory", hint: "vercel link — pick the project for this folder", run: vc("link") },
+  { label: "Env variables", hint: "vercel env ls", run: vc("env", "ls") },
+  { label: "Pull env", hint: "write development env to a local file — vercel env pull", run: envPull },
+  { label: "Dashboard", hint: "open the project in your browser — vercel open", run: vc("open") },
+  { label: "Who am I", hint: "vercel whoami", run: vc("whoami") },
+  { label: "Log in", hint: "vercel login", run: vc("login") },
 ];
 
-function header() {
+function info() {
   const { root, linked } = project();
-  const link = linked ? `${linked.projectName || linked.projectId}` : "not linked — choose 2 to link";
-  return `dir:     ${root}\nproject: ${link}`;
+  return [
+    ["project", linked ? linked.projectName || linked.projectId : "not linked — use Link directory", linked ? "ok" : "warn"],
+    ["dir", root],
+  ];
 }
 
 const cmd = process.argv[2] || "menu";
 if (cmd === "open-menu") openMenuPane();
 else if (cmd === "dashboard") process.exit(run("vercel", ["open"], project().root));
-else if (cmd === "menu") menu("Vercel", header, items);
+else if (cmd === "menu") menu({ title: "▲ Vercel", brand: "#EDEDED", info, items });
 else {
   console.error(`unknown command: ${cmd}`);
   process.exit(2);

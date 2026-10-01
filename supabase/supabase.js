@@ -49,28 +49,29 @@ function migrations() {
 }
 
 const items = [
-  { label: "Projects (supabase projects list)", run: sb("projects", "list") },
-  { label: "Link this directory to a project (supabase link)", run: sb("link") },
-  { label: "Migrations: local vs remote (supabase migration list --linked)", run: migrations },
-  { label: "Preview branches (supabase branches list)", run: sbRef("branches", "list") },
-  { label: "Edge functions (supabase functions list)", run: sbRef("functions", "list") },
-  { label: "Open dashboard in browser", run: async () => dashboard() },
-  { label: "Log in (supabase login)", run: sb("login") },
+  { label: "Projects", hint: "supabase projects list", run: sb("projects", "list") },
+  { label: "Link directory", hint: "supabase link — pick the project for this folder", run: sb("link") },
+  { label: "Migrations", hint: "local vs remote — supabase migration list --linked", run: migrations },
+  { label: "Preview branches", hint: "supabase branches list", run: sbRef("branches", "list") },
+  { label: "Edge functions", hint: "supabase functions list", run: sbRef("functions", "list") },
+  { label: "Dashboard", hint: "open the project in your browser", run: async () => dashboard() },
+  { label: "Log in", hint: "supabase login", run: sb("login") },
 ];
 
-function header() {
+function info() {
   const { root, cliRef, ref, name } = project();
-  const label = `${name ? `${name} ` : ""}(${ref})`;
-  const link = cliRef ? `${label} — linked`
-    : ref ? `${label} — CLI not linked; choose 2 to link`
-    : "not linked — choose 2 to link";
-  return `dir:     ${root}\nproject: ${link}`;
+  const project_ = ref ? `${name ? `${name} ` : ""}${ref}` : "none";
+  return [
+    ["project", project_, ref ? "ok" : "warn"],
+    ["cli link", cliRef ? "linked" : ref ? "not linked — use Link directory" : "not linked", cliRef ? "ok" : "warn"],
+    ["dir", root],
+  ];
 }
 
 const cmd = process.argv[2] || "menu";
 if (cmd === "open-menu") openMenuPane();
 else if (cmd === "dashboard") dashboard();
-else if (cmd === "menu") menu("Supabase", header, items);
+else if (cmd === "menu") menu({ title: "Supabase", brand: "#3ECF8E", info, items });
 else {
   console.error(`unknown command: ${cmd}`);
   process.exit(2);

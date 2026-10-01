@@ -20,6 +20,14 @@ command = ["node", "workspaces.js", "event"]
 on = "worktree.created"
 command = ["node", "workspaces.js", "event"]
 
+[[panes]]
+id = "menu"
+title = "Workspaces"
+placement = "popup"
+width = "85%"
+height = "80%"
+command = ["node", "workspaces.js", "menu"]
+
 [[actions]]
 id = "apply"
 title = "Workspaces: apply layout"

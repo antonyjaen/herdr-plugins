@@ -98,7 +98,10 @@ function run(paneId, command) {
 // Build every tab of the layout. `reuseTab` is the fresh tab of a just-created workspace,
 // which becomes the first layout tab instead of leaving an empty extra tab behind.
 function applyLayout(workspaceId, cwd, layout, reuseTab) {
-  const tabs = layout.tabs.filter((tab) => !tab.when || fs.existsSync(path.resolve(cwd, tab.when)));
+  // Re-applying only adds what's missing: a labelled tab that already exists is left alone.
+  const existing = new Set(herdr("tab", "list", "--workspace", workspaceId).tabs.map((t) => t.label));
+  const tabs = layout.tabs.filter((tab) => (!tab.when || fs.existsSync(path.resolve(cwd, tab.when))) &&
+    !(tab.label && existing.has(tab.label)));
   // Only a plain pane tab can take over the fresh tab; plugin tabs open their own.
   if (tabs[0]?.plugin) reuseTab = null;
   tabs.forEach((tab, t) => {
@@ -209,6 +212,77 @@ function onValidate() {
     (cwd ? `; this workspace -> ${here ? here.name : "none"}` : ""));
 }
 
+function workspaceCwd(workspaceId) {
+  return (herdr("pane", "list", "--workspace", workspaceId).panes[0]?.cwd || "").replace(/[\\/]+$/, "");
+}
+
+function applyTo(workspaceId, cwd) {
+  const resolved = resolveLayout(cwd);
+  if (!resolved) return `no layout for ${cwd}`;
+  validateLayout(resolved.layout, resolved.name);
+  const before = herdr("tab", "list", "--workspace", workspaceId).tabs.length;
+  applyLayout(workspaceId, cwd, resolved.layout, null);
+  const added = herdr("tab", "list", "--workspace", workspaceId).tabs.length - before;
+  const applied = loadApplied();
+  applied[workspaceId] = { layout: resolved.name, cwd, at: new Date().toISOString() };
+  saveApplied(applied);
+  return `${resolved.name}: ${added ? `added ${added} tab${added > 1 ? "s" : ""}` : "nothing missing"}`;
+}
+
+function openInEditor(file) {
+  if (!fs.existsSync(file)) {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ layouts: {}, workspaces: [], default: null }, null, 2) + "\n");
+  }
+  const editor = process.env.VISUAL || process.env.EDITOR;
+  const [cmd, args] = editor ? [editor, [file]]
+    : process.platform === "win32" ? ["notepad", [file]]
+    : [process.platform === "darwin" ? "open" : "xdg-open", [file]];
+  spawnSync(cmd, args, { stdio: "inherit", shell: Boolean(editor) && process.platform === "win32" });
+}
+
+function onMenu() {
+  const { menu } = require("./lib");
+  const ctx = context();
+  const workspaceId = ctx.workspace_id || process.env.HERDR_WORKSPACE_ID;
+  const cwd = process.env.HERDR_TARGET_CWD || ctx.workspace_cwd || (workspaceId && workspaceCwd(workspaceId));
+  const say = (s) => console.log(`\n  ${s}`);
+  menu({
+    title: "Workspaces",
+    brand: "#8DC8C5",
+    info: () => {
+      let layout = "none";
+      try {
+        layout = resolveLayout(cwd)?.name || "none — set \"default\" or a rule";
+      } catch (err) {
+        layout = `error: ${err.message}`;
+      }
+      return [
+        ["layout", layout, layout.startsWith("none") || layout.startsWith("error") ? "warn" : "ok"],
+        ["dir", cwd || "?"],
+        ["config", configFile],
+      ];
+    },
+    items: [
+      { label: "Add missing tabs", hint: "apply this workspace's layout (existing tabs are kept)",
+        run: async () => say(applyTo(workspaceId, cwd)) },
+      { label: "All workspaces", hint: "add missing layout tabs in every workspace",
+        run: async () => {
+          for (const w of herdr("workspace", "list").workspaces) say(`${w.label}: ${applyTo(w.workspace_id, workspaceCwd(w.workspace_id))}`);
+        } },
+      { label: "Layouts", hint: "show layouts and matching rules",
+        run: async () => {
+          const config = readJson(configFile, { layouts: {}, workspaces: [] });
+          for (const [name, l] of Object.entries(config.layouts || {}))
+            say(`${name}${config.default === name ? " (default)" : ""}: ${(l.tabs || []).map((t) => t.label || t.plugin || "tab").join(" · ")}`);
+          for (const r of config.workspaces || []) say(`${r.match} → ${r.layout}`);
+        } },
+      { label: "Validate", hint: "check workspaces.json", run: async () => onValidate() },
+      { label: "Edit config", hint: "open workspaces.json in your editor", run: async () => openInEditor(configFile) },
+    ],
+  });
+}
+
 function onStartup() {
   const live = new Set(herdr("workspace", "list").workspaces.map((w) => w.workspace_id));
   const applied = loadApplied();
@@ -222,6 +296,7 @@ try {
   else if (cmd === "apply") onApply(arg);
   else if (cmd === "validate") onValidate();
   else if (cmd === "startup") onStartup();
+  else if (cmd === "menu") onMenu();
   else throw new Error(`unknown command: ${cmd}`);
 } catch (err) {
   console.error(err.message);
