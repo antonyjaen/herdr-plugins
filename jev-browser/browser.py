@@ -70,12 +70,40 @@ def ensure_chrome():
     # Our own record of the port: a second launch on a busy profile just hands off to the
     # running Chrome and ignores its own --remote-debugging-port.
     marker = STATE_DIR / "cdp-port"
-    try:
-        port = int(marker.read_text().strip())
-        if cdp_alive(port):
+    lock = STATE_DIR / "chrome.lock"
+
+    def running():
+        try:
+            port = int(marker.read_text().strip())
+            return port if cdp_alive(port) else None
+        except (OSError, ValueError):
+            return None
+
+    # Several panes can start at once (layouts, session restore): one launches Chrome, the rest wait for it.
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + 30
+    while True:
+        if port := running():
             return port
-    except (OSError, ValueError):
-        pass
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            break
+        except FileExistsError:
+            try:
+                stale = time.time() - lock.stat().st_mtime > 30
+            except FileNotFoundError:
+                continue
+            if stale or time.monotonic() > deadline:
+                lock.unlink(missing_ok=True)  # a launcher that died mid-start
+            time.sleep(0.2)
+    try:
+        return launch_chrome(marker)
+    finally:
+        lock.unlink(missing_ok=True)
+
+
+def launch_chrome(marker):
     PROFILE.mkdir(parents=True, exist_ok=True)
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))

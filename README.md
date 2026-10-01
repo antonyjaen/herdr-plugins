@@ -113,6 +113,10 @@ Put layouts in `$(herdr plugin config-dir antonyjaen.workspaces)/workspaces.json
 }
 ```
 
+- A tab can host another plugin's pane instead of panes, e.g.
+  `{ "label": "browser", "plugin": "antonyjaen.jev-browser", "entrypoint": "browser" }`
+  or `{ "label": "supabase", "plugin": "antonyjaen.supabase", "when": "supabase" }`.
+  `when` names a path under the workspace that must exist for the tab to open.
 - A project can carry its own `.herdr/layout.json` (one layout, `{ "tabs": [...] }`);
   it wins over the rules.
 - `match` is a path glob: `*` within a folder name, `**` across folders.

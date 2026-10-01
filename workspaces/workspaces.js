@@ -72,6 +72,10 @@ function resolveLayout(cwd, name) {
 function validateLayout(layout, where) {
   if (!Array.isArray(layout?.tabs) || !layout.tabs.length) throw new Error(`${where}: "tabs" must be a non-empty array`);
   layout.tabs.forEach((tab, t) => {
+    if (tab.plugin !== undefined) {
+      if (typeof tab.plugin !== "string" || tab.panes) throw new Error(`${where} tab ${t + 1}: a plugin tab takes "plugin" and "entrypoint", not "panes"`);
+      return;
+    }
     const panes = tab.panes?.length ? tab.panes : [{}];
     panes.forEach((pane, i) => {
       const at = `${where} tab ${t + 1} pane ${i + 1}`;
@@ -94,8 +98,17 @@ function run(paneId, command) {
 // Build every tab of the layout. `reuseTab` is the fresh tab of a just-created workspace,
 // which becomes the first layout tab instead of leaving an empty extra tab behind.
 function applyLayout(workspaceId, cwd, layout, reuseTab) {
-  layout.tabs.forEach((tab, t) => {
+  const tabs = layout.tabs.filter((tab) => !tab.when || fs.existsSync(path.resolve(cwd, tab.when)));
+  // Only a plain pane tab can take over the fresh tab; plugin tabs open their own.
+  if (tabs[0]?.plugin) reuseTab = null;
+  tabs.forEach((tab, t) => {
     const tabCwd = tab.cwd ? path.resolve(cwd, tab.cwd) : cwd;
+    if (tab.plugin) {
+      const res = herdr("plugin", "pane", "open", "--plugin", tab.plugin, "--entrypoint", tab.entrypoint || "menu",
+        "--placement", "tab", "--workspace", workspaceId, "--no-focus", "--env", `HERDR_TARGET_CWD=${tabCwd}`);
+      if (tab.label) herdr("tab", "rename", res.plugin_pane.pane.tab_id, tab.label);
+      return;
+    }
     let tabId, rootPane;
     if (t === 0 && reuseTab) {
       tabId = reuseTab.tab_id;
