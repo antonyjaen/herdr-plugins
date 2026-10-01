@@ -1,0 +1,31 @@
+id = "intenova.supabase"
+name = "Supabase"
+version = "0.1.0"
+min_herdr_version = "0.9.0"
+description = "Supabase CLI menu for the focused pane's project: link, projects, migrations, branches, functions, dashboard."
+platforms = ["linux", "macos", "windows"]
+
+# Requires node and the supabase CLI on PATH. Read-only and linking commands
+# only: nothing here pushes, resets, or deletes database state.
+
+[[panes]]
+id = "menu"
+title = "Supabase"
+placement = "popup"
+width = "85%"
+height = "80%"
+command = ["node", "supabase.js", "menu"]
+
+[[actions]]
+id = "menu"
+title = "Supabase: open menu"
+description = "Open the Supabase menu for the focused pane's project."
+contexts = ["workspace", "pane"]
+command = ["node", "supabase.js", "open-menu"]
+
+[[actions]]
+id = "dashboard"
+title = "Supabase: open dashboard"
+description = "Open the linked project's Supabase dashboard in the browser."
+contexts = ["workspace", "pane"]
+command = ["node", "supabase.js", "dashboard"]

@@ -1,0 +1,31 @@
+id = "intenova.vercel"
+name = "Vercel"
+version = "0.1.0"
+min_herdr_version = "0.9.0"
+description = "Vercel CLI menu for the focused pane's project: link, deployments, env vars, env pull, dashboard."
+platforms = ["linux", "macos", "windows"]
+
+# Requires node and the vercel CLI on PATH. Nothing here deploys or changes
+# remote env vars; `env pull` writes a local file only after confirmation.
+
+[[panes]]
+id = "menu"
+title = "Vercel"
+placement = "popup"
+width = "85%"
+height = "80%"
+command = ["node", "vercel.js", "menu"]
+
+[[actions]]
+id = "menu"
+title = "Vercel: open menu"
+description = "Open the Vercel menu for the focused pane's project."
+contexts = ["workspace", "pane"]
+command = ["node", "vercel.js", "open-menu"]
+
+[[actions]]
+id = "dashboard"
+title = "Vercel: open dashboard"
+description = "Open the linked project in the Vercel dashboard."
+contexts = ["workspace", "pane"]
+command = ["node", "vercel.js", "dashboard"]
