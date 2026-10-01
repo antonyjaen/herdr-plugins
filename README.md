@@ -10,6 +10,7 @@ focused pane, and a browser pane driven by hand or by goals.
 herdr plugin install antonyjaen/herdr-plugins/supabase
 herdr plugin install antonyjaen/herdr-plugins/vercel
 herdr plugin install antonyjaen/herdr-plugins/jev-browser
+herdr plugin install antonyjaen/herdr-plugins/workspaces
 ```
 
 Requires `node` plus the matching CLI on `PATH`:
@@ -82,6 +83,46 @@ TEXT_MODEL=inception/mercury-2.5
 MiniMax works too (`TEXT_MODEL_BASE_URL=https://api.minimax.io/v1`,
 `TEXT_MODEL=MiniMax-M2.7-highspeed`); the plugin asks it to keep its reasoning
 out of the answer.
+
+## Workspaces
+
+Declarative tab/pane layouts, applied once when a matching workspace (or
+worktree) is created, or on demand with **Workspaces: apply layout**. A
+cross-platform take on
+[herdr-plugin-workspace-manager](https://github.com/razajamil/herdr-plugin-workspace-manager),
+built only on herdr CLI calls. Requires `node`.
+
+Put layouts in `$(herdr plugin config-dir antonyjaen.workspaces)/workspaces.json`:
+
+```json
+{
+  "layouts": {
+    "dev": {
+      "tabs": [
+        { "label": "code", "panes": [
+          { "command": "claude" },
+          { "split": "right", "ratio": 0.4, "command": "pnpm dev" },
+          { "split": "down", "of": 2, "command": "git status" }
+        ]},
+        { "label": "logs", "panes": [{ "command": "vercel logs" }] }
+      ]
+    }
+  },
+  "workspaces": [{ "match": "~/code/my-app*", "layout": "dev" }],
+  "default": null
+}
+```
+
+- A project can carry its own `.herdr/layout.json` (one layout, `{ "tabs": [...] }`);
+  it wins over the rules.
+- `match` is a path glob: `*` within a folder name, `**` across folders.
+  Matching ignores case on Windows and macOS.
+- Each pane after the first splits pane `of` (default: the previous one)
+  `right` or `down`; `ratio` sizes the split; `cwd` is relative to the tab's.
+- A fresh workspace's first tab is reused; layouts never touch a workspace
+  that already has more than one pane, and apply only once per workspace.
+- **Workspaces: validate config** checks the file and shows which layout the
+  current workspace gets.
 
 ## Safety
 

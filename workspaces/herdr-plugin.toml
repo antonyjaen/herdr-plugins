@@ -1,0 +1,35 @@
+id = "antonyjaen.workspaces"
+name = "Workspaces"
+version = "0.1.0"
+min_herdr_version = "0.9.0"
+description = "Declarative tab/pane layouts per workspace, applied when a matching workspace is created or on demand."
+platforms = ["linux", "macos", "windows"]
+
+# Requires node. Layouts live in `<plugin config dir>/workspaces.json` and/or a
+# per-project `.herdr/layout.json`; see the repo README.
+
+[[startup]]
+command = ["node", "workspaces.js", "startup"]
+
+# Worktrees created from the CLI or UI open as new workspaces.
+[[events]]
+on = "workspace.created"
+command = ["node", "workspaces.js", "event"]
+
+[[events]]
+on = "worktree.created"
+command = ["node", "workspaces.js", "event"]
+
+[[actions]]
+id = "apply"
+title = "Workspaces: apply layout"
+description = "Build this workspace's layout (project file, matching rule, or default) as new tabs."
+contexts = ["workspace"]
+command = ["node", "workspaces.js", "apply"]
+
+[[actions]]
+id = "validate"
+title = "Workspaces: validate config"
+description = "Check workspaces.json and show which layout this workspace gets."
+contexts = ["workspace", "global"]
+command = ["node", "workspaces.js", "validate"]
