@@ -246,38 +246,48 @@ function onMenu() {
   const ctx = context();
   const workspaceId = ctx.workspace_id || process.env.HERDR_WORKSPACE_ID;
   const cwd = process.env.HERDR_TARGET_CWD || ctx.workspace_cwd || (workspaceId && workspaceCwd(workspaceId));
-  const say = (s) => console.log(`\n  ${s}`);
+  const layoutName = () => {
+    try {
+      return resolveLayout(cwd)?.name || null;
+    } catch (err) {
+      return `error: ${err.message}`;
+    }
+  };
   menu({
     title: "workspaces",
-    info: () => {
-      let layout = "none";
-      try {
-        layout = resolveLayout(cwd)?.name || "none — set \"default\" or a rule";
-      } catch (err) {
-        layout = `error: ${err.message}`;
-      }
+    cards: () => {
+      const name = layoutName();
+      const ok = name && !name.startsWith("error");
       return [
-        ["layout", layout, layout.startsWith("none") || layout.startsWith("error") ? "warn" : "ok"],
-        ["dir", cwd || "?"],
-        ["config", configFile],
+        { glyph: ok ? "●" : "○", glyphColor: ok ? "#5faf5f" : "#d75f5f", title: name || "no layout",
+          sub: ok ? "⚒ layout for this workspace" : "⚒ set \"default\" or a rule", subColor: "#d7af00" },
+        { glyph: "▣", glyphColor: "#6c6c6c", title: path.basename(cwd || "?"), sub: cwd || "?" },
       ];
     },
     items: [
       { label: "Add missing tabs", hint: "apply this workspace's layout (existing tabs are kept)",
-        run: async () => say(applyTo(workspaceId, cwd)) },
+        run: (io) => io.print(applyTo(workspaceId, cwd)) },
       { label: "All workspaces", hint: "add missing layout tabs in every workspace",
-        run: async () => {
-          for (const w of herdr("workspace", "list").workspaces) say(`${w.label}: ${applyTo(w.workspace_id, workspaceCwd(w.workspace_id))}`);
+        run: (io) => {
+          for (const w of herdr("workspace", "list").workspaces) io.print(`${w.label}: ${applyTo(w.workspace_id, workspaceCwd(w.workspace_id))}`);
         } },
       { label: "Layouts", hint: "show layouts and matching rules",
-        run: async () => {
+        run: (io) => {
           const config = readJson(configFile, { layouts: {}, workspaces: [] });
           for (const [name, l] of Object.entries(config.layouts || {}))
-            say(`${name}${config.default === name ? " (default)" : ""}: ${(l.tabs || []).map((t) => t.label || t.plugin || "tab").join(" · ")}`);
-          for (const r of config.workspaces || []) say(`${r.match} → ${r.layout}`);
+            io.print(`${name}${config.default === name ? " (default)" : ""}: ${(l.tabs || []).map((t) => t.label || t.plugin || "tab").join(" · ")}`);
+          for (const r of config.workspaces || []) io.print(`${r.match} → ${r.layout}`);
         } },
-      { label: "Validate", hint: "check workspaces.json", run: async () => onValidate() },
-      { label: "Edit config", hint: "open workspaces.json in your editor", run: async () => openInEditor(configFile) },
+      { label: "Validate", hint: "check workspaces.json", run: (io) => {
+        const log = console.log;
+        console.log = (s) => io.print(s);
+        try {
+          onValidate();
+        } finally {
+          console.log = log;
+        }
+      } },
+      { label: "Edit config", hint: "open workspaces.json in your editor", run: (io) => io.interactive(() => openInEditor(configFile)) },
     ],
   });
 }

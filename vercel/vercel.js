@@ -14,7 +14,11 @@ function project() {
   return { root, linked };
 }
 
-const vc = (...args) => () => run("vercel", args, project().root);
+// Captured into the output panel.
+const vc = (...args) => (io) => io.exec("vercel", args, project().root);
+
+// Prompts (project picker, login) need the whole terminal.
+const vcInteractive = (...args) => (io) => io.interactive(() => run("vercel", args, project().root));
 
 async function envPull(rl) {
   const { root } = project();
@@ -33,27 +37,28 @@ async function envPull(rl) {
 }
 
 const items = [
-  { label: "Deployments", hint: "recent deployments — vercel ls", run: vc("ls") },
-  { label: "Link directory", hint: "vercel link — pick the project for this folder", run: vc("link") },
+  { label: "Deployments", hint: "recent deployments: vercel ls", run: vc("ls") },
+  { label: "Link directory", hint: "vercel link: pick the project for this folder", run: vcInteractive("link") },
   { label: "Env variables", hint: "vercel env ls", run: vc("env", "ls") },
-  { label: "Pull env", hint: "write development env to a local file — vercel env pull", run: envPull },
-  { label: "Dashboard", hint: "open the project in your browser — vercel open", run: vc("open") },
+  { label: "Pull env", hint: "write development env to a local file: vercel env pull", run: (io) => io.interactive(envPull) },
+  { label: "Dashboard", hint: "open the project in your browser: vercel open", run: vc("open") },
   { label: "Who am I", hint: "vercel whoami", run: vc("whoami") },
-  { label: "Log in", hint: "vercel login", run: vc("login") },
+  { label: "Log in", hint: "vercel login", run: vcInteractive("login") },
 ];
 
-function info() {
+function cards() {
   const { root, linked } = project();
   return [
-    ["project", linked ? linked.projectName || linked.projectId : "not linked — use Link directory", linked ? "ok" : "warn"],
-    ["dir", root],
+    { glyph: linked ? "●" : "○", glyphColor: linked ? "#5faf5f" : "#6c6c6c", title: linked ? linked.projectName || "linked" : "not linked",
+      sub: linked ? `⚒ ${linked.projectId}` : "⚒ run Link directory", subColor: "#d7af00" },
+    { glyph: "▣", glyphColor: "#6c6c6c", title: path.basename(root), sub: root },
   ];
 }
 
 const cmd = process.argv[2] || "menu";
 if (cmd === "open-menu") openMenuPane();
 else if (cmd === "dashboard") process.exit(run("vercel", ["open"], project().root));
-else if (cmd === "menu") menu({ title: "vercel", info, items });
+else if (cmd === "menu") menu({ title: "vercel", cards, items });
 else {
   console.error(`unknown command: ${cmd}`);
   process.exit(2);
