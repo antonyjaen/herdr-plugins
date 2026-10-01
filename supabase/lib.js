@@ -95,10 +95,46 @@ const cut = (s, n) => (n <= 0 ? "" : s.length > n ? s.slice(0, Math.max(0, n - 1
 const padTo = (s, n) => s + " ".repeat(Math.max(0, n - visible(s).length));
 const at = (row, col) => `${ESC}${row + 1};${col + 1}H`;
 
-// One chunk (fast typing, pasted text) emits several keypresses at once: queue them all.
+// Input: our own parser (Node's keypress parser doesn't know mouse reports). One chunk can
+// hold many events (fast typing, pastes), so they queue.
+const MOUSE_ON = `${ESC}?1000h${ESC}?1006h`, MOUSE_OFF = `${ESC}?1006l${ESC}?1000l`;
 const keys = [];
 let wake = null;
 let listening = false;
+let raw = false;
+
+function parseInput(data) {
+  const out = [];
+  const csi = { A: "up", B: "down", C: "right", D: "left", H: "home", F: "end" };
+  const tilde = { 1: "home", 3: "delete", 4: "end", 5: "pageup", 6: "pagedown" };
+  let m;
+  for (let i = 0; i < data.length;) {
+    const rest = data.slice(i);
+    if ((m = /^\x1b\[200~([\s\S]*?)\x1b\[201~/.exec(rest))) {
+      for (const ch of m[1]) out.push({ name: ch.toLowerCase(), str: ch });
+    } else if ((m = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])/.exec(rest))) {
+      const b = Number(m[1]);
+      out.push(b & 64
+        ? { name: b & 1 ? "wheeldown" : "wheelup", x: Number(m[2]) - 1, y: Number(m[3]) - 1 }
+        : { name: "mouse", button: b & 3, press: m[4] === "M", drag: Boolean(b & 32), x: Number(m[2]) - 1, y: Number(m[3]) - 1 });
+    } else if ((m = /^\x1b\[(\d+)(;\d+)?~/.exec(rest))) {
+      if (tilde[m[1]]) out.push({ name: tilde[m[1]] });
+    } else if ((m = /^\x1b\[[\d;]*([A-Za-z])/.exec(rest)) || (m = /^\x1bO([A-Za-z])/.exec(rest))) {
+      if (csi[m[1]]) out.push({ name: csi[m[1]] });
+    } else {
+      const ch = data[i];
+      m = [ch];
+      if (ch === "\r" || ch === "\n") out.push({ name: "return" });
+      else if (ch === "\x7f" || ch === "\b") out.push({ name: "backspace" });
+      else if (ch === "\x1b") out.push({ name: "escape" });
+      else if (ch === "\t") out.push({ name: "tab" });
+      else if (ch < " ") out.push({ name: String.fromCharCode(ch.charCodeAt(0) + 96), ctrl: true });
+      else out.push({ name: ch.toLowerCase(), str: ch });
+    }
+    i += m[0].length;
+  }
+  return out;
+}
 
 function readKey() {
   if (keys.length) return Promise.resolve(keys.shift());
@@ -106,12 +142,13 @@ function readKey() {
 }
 
 function startRaw() {
-  readline.emitKeypressEvents(process.stdin);
   if (!listening) {
     listening = true;
-    process.stdin.on("keypress", (str, key) => {
-      keys.push({ ...(key || {}), str });
-      if (wake) {
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (data) => {
+      if (!raw) return; // a line-mode prompt (interactive) owns the input
+      keys.push(...parseInput(String(data)));
+      if (wake && keys.length) {
         const w = wake;
         wake = null;
         w(keys.shift());
@@ -119,13 +156,16 @@ function startRaw() {
     });
   }
   keys.length = 0;
+  raw = true;
   if (process.stdin.isTTY) process.stdin.setRawMode(true);
   process.stdin.resume();
+  process.stdout.write(MOUSE_ON);
 }
 
 function endRaw() {
+  raw = false;
   if (process.stdin.isTTY) process.stdin.setRawMode(false);
-  process.stdout.write(`${RESET}${ESC}?25h${ESC}2J${ESC}H`);
+  process.stdout.write(`${MOUSE_OFF}${RESET}${ESC}?25h${ESC}2J${ESC}H`);
 }
 
 // Box drawing on the canvas: square cards, rounded panels.
@@ -191,6 +231,7 @@ function exec(cmd, args, cwd, sink) {
 async function menu(opts) {
   const items = opts.items;
   let sel = 0, lines = [], state = "idle", running = null, scroll = 0;
+  let geom = { top: 6, height: 10, leftW: 20 };
 
   const draw = () => {
     // Never touch the last column: a full-width row would autowrap and shift everything below.
@@ -218,6 +259,7 @@ async function menu(opts) {
     // actions panel (left) and output panel (right)
     const top = 6, height = rows - top - 2;
     const leftW = Math.min(36, Math.max(...items.map((i) => i.label.length)) + 8);
+    geom = { top, height, leftW };
     box(out, top, 1, leftW, height, { rounded: true, title: "actions" });
     items.forEach((it, i) => {
       if (i >= height - 2) return;
@@ -240,7 +282,7 @@ async function menu(opts) {
     const st = { idle: ["■ IDLE", C.badge, C.text], running: ["● RUNNING", C.accent, "#121212"],
       done: ["✓ DONE", C.badge, C.ok], failed: ["✗ FAILED", C.badge, C.err] }[state];
     const left = `${badge(opts.title, C.accent, "#121212")} ${badge(...st)} ${BG(C.canvas)}${FG(C.text)}${BOLD}${item.label}${RESET}`;
-    const hints = `${FG(C.subtle)}${items.length} actions · ↑↓ select · enter run · pgup/pgdn scroll · q quit${RESET}`;
+    const hints = `${FG(C.subtle)}${items.length} actions · click or ↑↓ + enter to run · wheel scrolls · q quit${RESET}`;
     out.push(at(rows - 1, 0) + BG(C.canvas) + padTo(cutVisible(left + `${BG(C.canvas)}  ` + hints, cols), cols) + RESET);
     process.stdout.write(out.join(""));
   };
@@ -267,8 +309,7 @@ async function menu(opts) {
     },
     // Hand the whole terminal to a command that needs to ask questions (login, link, prompts).
     interactive: async (fn) => {
-      if (process.stdin.isTTY) process.stdin.setRawMode(false);
-      process.stdout.write(`${RESET}${ESC}?25h${ESC}2J${ESC}H`);
+      endRaw();
       const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
       try {
         return await fn(rl);
@@ -283,7 +324,19 @@ async function menu(opts) {
   for (;;) {
     draw();
     const key = await readKey();
-    const name = key.name || key.str;
+    let name = key.name || key.str;
+    // Mouse: click an action to run it; the wheel scrolls output (or moves through actions).
+    if (name === "mouse") {
+      const i = key.y - geom.top - 1;
+      if (!key.press || key.drag || key.button !== 0 || key.x > geom.leftW || i < 0 || i >= items.length) continue;
+      sel = i;
+      name = "return";
+    } else if (name === "wheelup" || name === "wheeldown") {
+      const up = name === "wheelup";
+      if (key.x > geom.leftW) scroll = up ? scroll + 3 : Math.max(0, scroll - 3);
+      else sel = (sel + items.length + (up ? -1 : 1)) % items.length;
+      continue;
+    }
     if (name === "q" || name === "escape" || (key.ctrl && name === "c")) break;
     if (name === "up" || name === "k") sel = (sel + items.length - 1) % items.length;
     else if (name === "down" || name === "j") sel = (sel + 1) % items.length;
@@ -317,7 +370,7 @@ async function menu(opts) {
  * opts: { title, entries, render: (e) => [mark, name, detail, tag], choose: (e) => void }
  */
 async function pick(opts) {
-  let query = "", sel = 0;
+  let query = "", sel = 0, shownFirst = 0;
   const matches = () => {
     const q = query.toLowerCase();
     return opts.entries.filter((e) => opts.render(e).slice(1, 3).join(" ").toLowerCase().includes(q));
@@ -330,6 +383,7 @@ async function pick(opts) {
     text(out, 1, 3, `${FG(C.accent)}${BOLD}› ${RESET}${BG(C.surface)}${FG(C.text)}${query}${FG(C.accent)}▏${RESET}`, w - 4);
     const nameW = Math.min(28, Math.max(8, ...opts.entries.map((e) => opts.render(e)[1].length)) + 2);
     const first = Math.max(0, Math.min(sel - room + 1, list.length - room));
+    shownFirst = first;
     list.slice(first, first + room - 1).forEach((e, i) => {
       const [mark, name, detail, tag] = opts.render(e);
       const on = first + i === sel;
@@ -339,7 +393,7 @@ async function pick(opts) {
     });
     if (!list.length) text(out, 2, 3, `${FG(C.subtle)}no match${RESET}`, w - 4);
     const badge = `${BG(C.accent)}${FG("#121212")}${BOLD} ${opts.title} ${RESET}`;
-    out.push(at(rows - 1, 0) + BG(C.canvas) + padTo(cutVisible(`${badge} ${BG(C.canvas)}${FG(C.subtle)}${list.length} of ${opts.entries.length} · type to filter · ↑↓ select · enter switch · esc close${RESET}`, cols), cols) + RESET);
+    out.push(at(rows - 1, 0) + BG(C.canvas) + padTo(cutVisible(`${badge} ${BG(C.canvas)}${FG(C.subtle)}${list.length} of ${opts.entries.length} · type to filter · click or ↑↓ + enter to switch · esc close${RESET}`, cols), cols) + RESET);
     process.stdout.write(out.join(""));
   };
   process.stdout.on("resize", () => draw(matches()));
@@ -350,10 +404,16 @@ async function pick(opts) {
     sel = Math.min(sel, Math.max(0, list.length - 1));
     draw(list);
     const key = await readKey();
-    const name = key.name;
+    let name = key.name;
+    if (name === "mouse") {  // click a row to switch there
+      const i = shownFirst + key.y - 2;
+      if (!key.press || key.drag || key.button !== 0 || key.y < 2 || i >= list.length) continue;
+      sel = i;
+      name = "return";
+    }
     if (name === "escape" || (key.ctrl && name === "c")) break;
-    if (name === "up") sel = Math.max(0, sel - 1);
-    else if (name === "down") sel = Math.min(list.length - 1, sel + 1);
+    if (name === "up" || name === "wheelup") sel = Math.max(0, sel - 1);
+    else if (name === "down" || name === "wheeldown") sel = Math.min(list.length - 1, sel + 1);
     else if (name === "backspace") query = query.slice(0, -1);
     else if (name === "return" || name === "enter") {
       if (list[sel]) {

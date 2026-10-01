@@ -112,7 +112,7 @@ def launch_chrome(marker):
     subprocess.Popen(
         [find_chrome(), f"--remote-debugging-port={port}", "--remote-debugging-address=127.0.0.1",
          f"--user-data-dir={PROFILE}", "--headless=new", "--no-first-run", "--no-default-browser-check",
-         "--hide-scrollbars", HOME_URL],
+         "--hide-scrollbars", "--disable-blink-features=AutomationControlled", HOME_URL],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     for _ in range(100):
@@ -124,7 +124,12 @@ def launch_chrome(marker):
 
 
 load_env()
-os.environ["BU_CDP_URL"] = f"http://127.0.0.1:{ensure_chrome()}"
+CDP_PORT = ensure_chrome()
+os.environ["BU_CDP_URL"] = f"http://127.0.0.1:{CDP_PORT}"
+with urllib.request.urlopen(f"http://127.0.0.1:{CDP_PORT}/json/version", timeout=5) as _r:
+    import json as _json
+
+    USER_AGENT = _json.load(_r)["User-Agent"].replace("HeadlessChrome", "Chrome")
 os.environ["BU_NAME"] = "jev-browser"
 os.environ.setdefault("BH_TELEMETRY", "0")
 os.environ.setdefault("BH_UPDATE_CHECK", "0")
@@ -199,7 +204,7 @@ class Screen:
     def draw(self, img, top, cols, rows):
         if self.kitty:
             return self.draw_kitty(img, top, cols, rows)
-        img = img.convert("RGB").resize((cols, rows * 2), Image.Resampling.BILINEAR)
+        img = img.convert("RGB").resize((cols, rows * 2), Image.Resampling.LANCZOS)
         px = img.tobytes()
         lines, stride = [], cols * 3
         for r in range(rows):
@@ -273,8 +278,10 @@ class TerminalBrowser:
     def layout(self):
         self.cols, self.rows = term.size()
         self.page_rows = max(4, self.rows - 2)
-        # Square pixels in half-block mode: 1 cell = 1 px wide, 2 px tall.
-        width = max(480, min(2400, round(self.cols * 7 / self.zoom)))
+        # Square pixels in half-block mode: 1 cell = 1 px wide, 2 px tall. ~4 CSS px per cell keeps
+        # body text a few cells tall; kitty graphics show real pixels, so they can afford a wider page.
+        per_cell = 9 if self.screen.kitty else 4
+        width = max(360, min(2400, round(self.cols * per_cell / self.zoom)))
         self.vw, self.vh = width, max(240, round(width * self.page_rows * 2 / self.cols))
         self.apply_viewport(self.tab)
         self.screen.reset()
@@ -283,6 +290,9 @@ class TerminalBrowser:
 
     def apply_viewport(self, tab):
         tab.call("Emulation.setDeviceMetricsOverride", width=self.vw, height=self.vh, deviceScaleFactor=1, mobile=False)
+        # Headless Chrome announces itself as "HeadlessChrome", which sends sites like DuckDuckGo
+        # straight to a bot check; present the regular Chrome identity instead.
+        tab.call("Emulation.setUserAgentOverride", userAgent=USER_AGENT)
 
     def to_page(self, x, y):
         return (x + 0.5) * self.vw / self.cols, (y - 1 + 0.5) * self.vh / self.page_rows
@@ -311,7 +321,8 @@ class TerminalBrowser:
 
     def frame(self, force=False):
         # Half-blocks need only cols x 2*rows pixels: let Chrome downscale instead of shipping full frames.
-        scale = 1 if self.screen.kitty else self.cols / self.vw
+        # 2x the target size, then a Lanczos downscale here: sharper than Chrome's own scaling.
+        scale = 1 if self.screen.kitty else min(1.0, 2 * self.cols / self.vw)
         try:
             shot = self.tab.call("Page.captureScreenshot", format="jpeg", quality=80, optimizeForSpeed=True,
                                  clip={"x": 0, "y": 0, "width": self.vw, "height": self.vh, "scale": scale})["data"]
