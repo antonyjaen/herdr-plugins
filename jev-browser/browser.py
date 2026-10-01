@@ -178,14 +178,16 @@ KITTY_ID = 7171
 TEXT_JS = r"""(() => {
   const out = [], W = innerWidth, H = innerHeight, range = document.createRange();
   const rgb = (c) => (c.match(/[\d.]+/g) || [0, 0, 0]).slice(0, 3).map(Number);
-  const push = (x, y, h, color, text) => { const [r, g, b] = rgb(color); out.push([x, y, h, r, g, b, text]); };
+  const push = (x, y, h, color, text, w = 0) => { const [r, g, b] = rgb(color); out.push([x, y, h, w, r, g, b, text]); };
   const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT);
   while (walker.nextNode() && out.length < 6000) {
     const node = walker.currentNode, text = node.textContent;
     if (!text.trim()) continue;
     const el = node.parentElement;
     if (!el || el.closest('script,style,noscript,svg')) continue;
-    const box = el.getBoundingClientRect();
+    // Judge by the text's own box: a parent can be zero-sized (display: contents) and still show its text.
+    range.selectNodeContents(node);
+    const box = range.getBoundingClientRect();
     if (box.bottom < 0 || box.top > H || box.right < 0 || box.left > W) continue;
     if (box.width <= 2 || box.height <= 2) continue;  // visually-hidden (screen-reader only) text
     const cs = getComputedStyle(el);
@@ -194,7 +196,7 @@ TEXT_JS = r"""(() => {
     while ((m = re.exec(text))) {
       range.setStart(node, m.index); range.setEnd(node, m.index + m[0].length);
       const r = range.getBoundingClientRect();
-      if (r.width && r.bottom > 0 && r.top < H && r.right > 0 && r.left < W) push(r.left, r.top, r.height, cs.color, m[0]);
+      if (r.width > 1 && r.bottom > 0 && r.top < H && r.right > 0 && r.left < W) push(r.left, r.top, r.height, cs.color, m[0], r.width);
     }
   }
   // Form controls: their 1px borders vanish when the page is shrunk to cells, so report them
@@ -206,7 +208,9 @@ TEXT_JS = r"""(() => {
     const cs = getComputedStyle(el);
     if (cs.visibility === 'hidden' || +cs.opacity === 0) continue;
     const type = (el.getAttribute('type') || '').toLowerCase(), role = el.getAttribute('role');
-    const kind = type === 'checkbox' || role === 'checkbox' ? 'check' : type === 'radio' || role === 'radio' ? 'radio'
+    // Only native checkboxes/radios get a mark; role=radio/checkbox widgets draw their own state.
+    if (el.tagName !== 'INPUT' && (role === 'radio' || role === 'checkbox')) continue;
+    const kind = el.tagName === 'INPUT' && type === 'checkbox' ? 'check' : el.tagName === 'INPUT' && type === 'radio' ? 'radio'
       : el.tagName === 'SELECT' ? 'select' : el.tagName === 'BUTTON' || role === 'button' || ['submit', 'button', 'reset'].includes(type) ? 'button' : 'field';
     const checked = el.checked || el.getAttribute('aria-checked') === 'true';
     controls.push([kind, r.left, r.top, r.width, r.height, checked ? 1 : 0]);
@@ -234,14 +238,23 @@ SHOW_TEXT = "document.getElementById('__jev_hide')?.remove()"
 # alternate between one and two rows apart. {cw}/{ch} are CSS px per cell / per row.
 GRID_TEXT = r"""((cw, ch) => {
   let s = document.getElementById('__jev_grid');
-  if (s && s.dataset.cw == cw && s.dataset.ch == ch) return;
+  const count = document.getElementsByTagName('*').length;
+  if (s && s.dataset.cw == cw && s.dataset.ch == ch && s.dataset.n == count) return;
+  // Headings and hero text keep their own size and layout (squeezing them into the grid font wrecks
+  // designed pages); only normal-sized text joins the grid. Re-mark when the page's DOM changes.
+  if (s) s.disabled = true;
+  for (const el of document.querySelectorAll('[data-jev-big]')) el.removeAttribute('data-jev-big');
+  for (const el of document.body ? document.body.querySelectorAll('*') : []) {
+    if (parseFloat(getComputedStyle(el).fontSize) > ch * 1.4) el.setAttribute('data-jev-big', '');
+  }
   if (!s) { s = document.createElement('style'); s.id = '__jev_grid'; (document.head || document.documentElement).appendChild(s); }
+  s.disabled = false; s.dataset.n = document.getElementsByTagName('*').length;
   const probe = document.createElement('span');
   probe.style.cssText = 'font:' + Math.round(ch * 0.8) + 'px monospace;position:absolute;visibility:hidden;white-space:pre';
   probe.textContent = 'MMMMMMMMMM'; document.documentElement.appendChild(probe);
   const spacing = cw - probe.getBoundingClientRect().width / 10; probe.remove();
   s.dataset.cw = cw; s.dataset.ch = ch;
-  s.textContent = 'body,body *:not(svg):not(svg *){font-family:monospace!important;font-size:' + Math.round(ch * 0.8) +
+  s.textContent = 'body,body *:not(svg):not(svg *):not([data-jev-big]){font-family:monospace!important;font-size:' + Math.round(ch * 0.8) +
     'px!important;line-height:' + ch + 'px!important;letter-spacing:' + spacing.toFixed(2) + 'px!important;word-spacing:0!important}';
 })(%s, %s)"""
 UNGRID_TEXT = "document.getElementById('__jev_grid')?.remove()"
@@ -488,17 +501,28 @@ class TerminalBrowser:
                     put((r0 + r1) // 2, c1 - 1, ("▾", "edge", "field"))
 
         # Words left to right per row, each at its own cell or one space after the previous word.
-        placed = sorted(((int((y + h / 2) // ch), x, w) for x, y, h, *w in page.get("w", [])), key=lambda t: (t[0], t[1]))
-        for row, x, (r, g, b, word) in placed:
+        placed = sorted(((int((y + h / 2) // ch), x, rest) for x, y, h, *rest in page.get("w", [])), key=lambda t: (t[0], t[1]))
+        for row, x, (width, r, g, b, word) in placed:
             if not 0 <= row < self.page_rows:
                 continue
             col = max(int(round(x / cw)), cursor.get(row, -2) + 2)
             under = grid.get(row, {})
+            # Large text (headings) spans more cells than it has letters: spread the letters across
+            # the word's real width so a heading reads as one wide word, not small words far apart.
+            span = width / cw
+            # Whole-cell steps keep the letter spacing even; centre the spaced word on its real span.
+            step = max(1, round(span / len(word))) if span > len(word) * 1.4 else 1
+            if step > 1:
+                col += max(0, int((span - (len(word) - 1) * step - 1) / 2))
+            last = col
             for i, char in enumerate(word):
-                if col + i < self.cols and char.isprintable():
-                    bg = under.get(col + i, (None, None, None))[2]  # keep a field's fill behind its text
-                    put(row, col + i, (char, (r, g, b), bg))
-            cursor[row] = col + len(word) - 1
+                at_col = col + i * step
+                if at_col < self.cols and char.isprintable():
+                    bg = under.get(at_col, (None, None, None))[2]  # keep a field's fill behind its text
+                    put(row, at_col, (char, (r, g, b), bg))
+                    last = at_col
+            # A spaced-out word needs a wider gap after it than between its letters.
+            cursor[row] = last + 2 * (step - 1)
         return grid
 
     # ── actions ──
