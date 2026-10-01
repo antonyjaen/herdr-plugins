@@ -1,14 +1,15 @@
 # herdr-plugins
 
-[herdr](https://herdr.dev) plugins that put the Supabase and Vercel CLIs one
-action away, scoped to the project in the focused pane. Written in Node, so
-they run on Windows as well as macOS and Linux.
+[herdr](https://herdr.dev) plugins that run on Windows, macOS and Linux alike:
+the Supabase and Vercel CLIs one action away, scoped to the project in the
+focused pane, and a browser pane driven by hand or by goals.
 
 ## Install
 
 ```sh
 herdr plugin install antonyjaen/herdr-plugins/supabase
 herdr plugin install antonyjaen/herdr-plugins/vercel
+herdr plugin install antonyjaen/herdr-plugins/jev-browser
 ```
 
 Requires `node` plus the matching CLI on `PATH`:
@@ -46,11 +47,53 @@ command = "antonyjaen.supabase.menu"
 description = "Supabase menu"
 ```
 
+## Jev Browser
+
+**Jev Browser: open** splits a browser pane beside the focused pane. It drives
+a dedicated Chrome (its own profile under the plugin state dir, debugging port
+on 127.0.0.1) and shows the page as truecolor half-block text plus a numbered
+list of the page's controls. Type at the prompt:
+
+| Input | Does |
+| --- | --- |
+| `example.com`, `https://…` | Open the URL |
+| `3` | Click element [3] |
+| `type 2 Ada Lovelace`, `enter` | Fill field [2], press Enter |
+| `up` / `down`, `back`, `reload` | Scroll and navigate |
+| `shot`, `text` | Toggle the page image / page text |
+| `do <goal>` or any other sentence | Let the agent carry out the goal |
+
+Goals run on [jev-ultrafast](https://github.com/browser-use/jev-ultrafast):
+[TypeSafe Jev](https://docs.typesafe.ai/introduction) picks each action and
+element from the page's control list, and a small OpenAI-compatible LLM writes
+text only when a field needs typing. Ctrl+C stops a run.
+
+Requires [`uv`](https://docs.astral.sh/uv/), `node` and Google Chrome or
+Chromium (set `JEV_CHROME` if it isn't found). Put keys in the environment or
+in `$(herdr plugin config-dir antonyjaen.jev-browser)/.env`:
+
+```sh
+TYPESAFE_API_KEY=...
+TEXT_MODEL_API_KEY=...                        # e.g. OpenRouter or MiniMax
+TEXT_MODEL_BASE_URL=https://openrouter.ai/api/v1
+TEXT_MODEL=inception/mercury-2.5
+```
+
+MiniMax works too (`TEXT_MODEL_BASE_URL=https://api.minimax.io/v1`,
+`TEXT_MODEL=MiniMax-M2.7-highspeed`); the plugin asks it to keep its reasoning
+out of the answer.
+
 ## Safety
 
 Nothing here changes remote state: no `db push`/`db reset`, no deploys, no env
 var writes. `vercel env pull` only writes a local file, asks before
 overwriting, and accepts plain relative paths only.
+
+Jev Browser's Chrome profile is separate from your everyday one, but goals act
+on real sites: the agent clicks and types for you, and only stops at `DONE`,
+`BLOCKED`, Ctrl+C or its step budget. Chrome's debugging port listens on
+127.0.0.1 without authentication while that Chrome window is open, so any
+local program can drive it.
 
 ## License
 

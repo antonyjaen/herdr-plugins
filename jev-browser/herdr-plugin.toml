@@ -1,0 +1,28 @@
+id = "antonyjaen.jev-browser"
+name = "Jev Browser"
+version = "0.1.0"
+min_herdr_version = "0.9.0"
+description = "A browser in a herdr pane: dedicated Chrome rendered as truecolor text, driven by hand or by goals (TypeSafe Jev + a small LLM)."
+platforms = ["linux", "macos", "windows"]
+
+# Requires uv, node and Google Chrome/Chromium. Keys: TYPESAFE_API_KEY, plus
+# TEXT_MODEL_API_KEY / TEXT_MODEL_BASE_URL / TEXT_MODEL for typing text, from the
+# environment or `<plugin config dir>/.env`. Chrome runs with its own profile
+# under the plugin state dir, debugging port bound to 127.0.0.1.
+
+# Pre-build the script's Python environment so the first pane opens fast.
+[[build]]
+command = ["uv", "sync", "--script", "browser.py"]
+
+[[panes]]
+id = "browser"
+title = "Jev Browser"
+placement = "split"
+command = ["uv", "run", "--script", "browser.py"]
+
+[[actions]]
+id = "open"
+title = "Jev Browser: open"
+description = "Open the browser pane beside the focused pane."
+contexts = ["workspace", "pane", "global"]
+command = ["node", "open.js"]
