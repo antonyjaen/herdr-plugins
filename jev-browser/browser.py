@@ -5,8 +5,9 @@
 #   "pillow>=11,<13",
 # ]
 # ///
-"""A browser in a herdr pane: a dedicated Chrome, shown as truecolor text, driven by
-hand (URL / element number) or by a goal that TypeSafe Jev + a small LLM carry out."""
+"""A terminal browser for herdr: headless Chrome rendered into the pane (kitty graphics where the
+host supports it, truecolor half-blocks elsewhere), used with mouse and keyboard, plus
+goals carried out by TypeSafe Jev + a small LLM."""
 
 import base64
 import io
@@ -110,7 +111,8 @@ def launch_chrome(marker):
         port = s.getsockname()[1]
     subprocess.Popen(
         [find_chrome(), f"--remote-debugging-port={port}", "--remote-debugging-address=127.0.0.1",
-         f"--user-data-dir={PROFILE}", "--no-first-run", "--no-default-browser-check", HOME_URL],
+         f"--user-data-dir={PROFILE}", "--headless=new", "--no-first-run", "--no-default-browser-check",
+         "--hide-scrollbars", HOME_URL],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     for _ in range(100):
@@ -118,7 +120,7 @@ def launch_chrome(marker):
             marker.write_text(str(port))
             return port
         time.sleep(0.1)
-    sys.exit("Chrome did not open its debugging port. If the jev-browser Chrome window is open, close it and retry.")
+    sys.exit("Chrome did not open its debugging port. Is another copy of this profile running?")
 
 
 load_env()
@@ -157,220 +159,392 @@ DIM = "\x1b[2m"
 BOLD = "\x1b[1m"
 
 
-def halfblocks(jpeg_b64, cols, rows):
-    """Render a screenshot as ▀ cells: fg = upper pixel, bg = lower pixel (24-bit SGR)."""
-    img = Image.open(io.BytesIO(base64.b64decode(jpeg_b64))).convert("RGB")
-    w = max(10, cols)
-    h = max(2, min(rows * 2, round(img.height * w / img.width)))
-    img = img.resize((w, h - h % 2), Image.Resampling.BILINEAR)
-    px = img.load()
-    lines = []
-    for y in range(0, img.height, 2):
-        cells = []
-        for x in range(img.width):
-            (r1, g1, b1), (r2, g2, b2) = px[x, y], px[x, y + 1]
-            cells.append(f"\x1b[38;2;{r1};{g1};{b1}m\x1b[48;2;{r2};{g2};{b2}m▀")
-        lines.append("".join(cells) + RESET)
-    return "\n".join(lines)
+import hashlib  # noqa: E402
+import threading  # noqa: E402
+import zlib  # noqa: E402
+
+import term  # noqa: E402
+
+# ── Rendering ────────────────────────────────────────────────────────────────────
+
+KITTY_ID = 7171
+DEBUG_LOG = os.environ.get("JEV_DEBUG_LOG")
+
+
+def kitty_supported(t):
+    """Ask the terminal (via herdr) whether it accepts kitty graphics; DA1 bounds the wait."""
+    if os.environ.get("JEV_RENDER") in {"kitty", "blocks"}:
+        return os.environ["JEV_RENDER"] == "kitty"
+    if term.IS_WIN:  # herdr forwards images only to Ghostty/Kitty/WezTerm hosts, never on Windows
+        return False
+    term.write("\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[c")
+    seen, deadline = "", time.monotonic() + 1.0
+    while time.monotonic() < deadline:
+        try:
+            seen += t.events.get(timeout=0.1)
+        except Exception:
+            continue
+        if "\x1b[?" in seen and "c" in seen.split("\x1b[?")[-1]:
+            break
+    return "_Gi=31;OK" in seen
+
+
+class Screen:
+    """Draws frames into rows [top, top+rows) and only rewrites rows that changed."""
+
+    def __init__(self, kitty):
+        self.kitty = kitty
+        self.prev = []
+
+    def draw(self, img, top, cols, rows):
+        if self.kitty:
+            return self.draw_kitty(img, top, cols, rows)
+        img = img.convert("RGB").resize((cols, rows * 2), Image.Resampling.BILINEAR)
+        px = img.tobytes()
+        lines, stride = [], cols * 3
+        for r in range(rows):
+            up, lo = px[2 * r * stride:(2 * r + 1) * stride], px[(2 * r + 1) * stride:(2 * r + 2) * stride]
+            parts, last = [], None
+            for x in range(0, stride, 3):
+                cell = (up[x], up[x + 1], up[x + 2], lo[x], lo[x + 1], lo[x + 2])
+                if cell != last:
+                    parts.append("\x1b[38;2;%d;%d;%dm\x1b[48;2;%d;%d;%dm" % cell)
+                    last = cell
+                parts.append("▀")
+            lines.append("".join(parts))
+        if len(self.prev) != rows:
+            self.prev = [None] * rows
+        out = []
+        for r, line in enumerate(lines):
+            if line != self.prev[r]:
+                out.append(f"\x1b[{top + r + 1};1H{line}\x1b[0m")
+                self.prev[r] = line
+        term.write("".join(out))
+
+    def draw_kitty(self, img, top, cols, rows):
+        img = img.convert("RGB")
+        data = base64.b64encode(zlib.compress(img.tobytes(), 1)).decode()
+        chunks = [data[i:i + 4096] for i in range(0, len(data), 4096)] or [""]
+        out = [f"\x1b[{top + 1};1H"]
+        for i, chunk in enumerate(chunks):
+            more = 1 if i < len(chunks) - 1 else 0
+            head = (f"a=T,f=24,o=z,s={img.width},v={img.height},i={KITTY_ID},c={cols},r={rows},q=2,C=1,m={more}"
+                    if i == 0 else f"m={more}")
+            out.append(f"\x1b_G{head};{chunk}\x1b\\")
+        term.write("".join(out))
+
+    def reset(self):
+        self.prev = []
+        if self.kitty:
+            term.write(f"\x1b_Ga=d,d=I,i={KITTY_ID},q=2\x1b\\")
+
+
+# ── Keys forwarded to the page ───────────────────────────────────────────────────
+
+PAGE_KEYS = {  # name -> (key, code, windowsVirtualKeyCode, text)
+    "enter": ("Enter", "Enter", 13, "\r"), "tab": ("Tab", "Tab", 9, ""), "backspace": ("Backspace", "Backspace", 8, ""),
+    "delete": ("Delete", "Delete", 46, ""), "esc": ("Escape", "Escape", 27, ""), "up": ("ArrowUp", "ArrowUp", 38, ""),
+    "down": ("ArrowDown", "ArrowDown", 40, ""), "left": ("ArrowLeft", "ArrowLeft", 37, ""),
+    "right": ("ArrowRight", "ArrowRight", 39, ""), "home": ("Home", "Home", 36, ""), "end": ("End", "End", 35, ""),
+    "pageup": ("PageUp", "PageUp", 33, ""), "pagedown": ("PageDown", "PageDown", 34, ""),
+    "shift+tab": ("Tab", "Tab", 9, ""),
+}
+MODIFIERS = {"alt": 1, "ctrl": 2, "meta": 4, "shift": 8}
+
+HELP = "Ctrl+L address · Ctrl+G goal · Alt+←/→ back/fwd · Ctrl+R reload · Ctrl+±/0 zoom · Ctrl+Q quit"
+
+
+class TerminalBrowser:
+    def __init__(self, t):
+        self.t = t
+        self.screen = Screen(kitty_supported(t))
+        self.tab = Browser(HOME_URL)
+        self.zoom = 1.0
+        self.mode = "page"  # page | address | goal
+        self.edit = ""
+        self.status = HELP
+        self.goal_thread = None
+        self.goal_stop = threading.Event()
+        self.goal_steps = []
+        self.last_hash = None
+        self.layout()
+
+    # geometry: row 0 = address bar, last row = status, the rest is the page
+    def layout(self):
+        self.cols, self.rows = term.size()
+        self.page_rows = max(4, self.rows - 2)
+        # Square pixels in half-block mode: 1 cell = 1 px wide, 2 px tall.
+        width = max(480, min(2400, round(self.cols * 7 / self.zoom)))
+        self.vw, self.vh = width, max(240, round(width * self.page_rows * 2 / self.cols))
+        self.apply_viewport(self.tab)
+        self.screen.reset()
+        term.write("\x1b[2J")
+        self.last_hash = None
+
+    def apply_viewport(self, tab):
+        tab.call("Emulation.setDeviceMetricsOverride", width=self.vw, height=self.vh, deviceScaleFactor=1, mobile=False)
+
+    def to_page(self, x, y):
+        return (x + 0.5) * self.vw / self.cols, (y - 1 + 0.5) * self.vh / self.page_rows
+
+    # ── chrome ──
+    def bar(self):
+        url = self.current_url()
+        if self.mode == "address":
+            text, style = f" ⌕ {self.edit}▏", "\x1b[48;2;40;44;52m\x1b[38;2;230;230;230m"
+        elif self.mode == "goal":
+            text, style = f" ✦ Goal: {self.edit}▏", "\x1b[48;2;46;38;64m\x1b[38;2;235;225;255m"
+        else:
+            text, style = f" ‹ › ⟳  {url}", "\x1b[48;2;30;32;38m\x1b[38;2;200;204;212m"
+        term.write(f"\x1b[1;1H{style}{text[: self.cols].ljust(self.cols)}\x1b[0m")
+        status = self.status
+        if self.goal_thread:
+            status = "✦ " + (self.goal_steps[-1] if self.goal_steps else "thinking…") + "   (Esc stops)"
+        term.write(f"\x1b[{self.rows};1H\x1b[48;2;22;24;28m\x1b[38;2;140;146;160m"
+                   f"{(' ' + status)[: self.cols].ljust(self.cols)}\x1b[0m")
+
+    def current_url(self):
+        try:
+            return self.tab.evaluate("location.href") or ""
+        except Exception:
+            return ""
+
+    def frame(self, force=False):
+        # Half-blocks need only cols x 2*rows pixels: let Chrome downscale instead of shipping full frames.
+        scale = 1 if self.screen.kitty else self.cols / self.vw
+        try:
+            shot = self.tab.call("Page.captureScreenshot", format="jpeg", quality=80, optimizeForSpeed=True,
+                                 clip={"x": 0, "y": 0, "width": self.vw, "height": self.vh, "scale": scale})["data"]
+        except Exception:
+            return
+        digest = hashlib.sha1(shot.encode()).digest()
+        if digest == self.last_hash and not force:
+            return
+        self.last_hash = digest
+        img = Image.open(io.BytesIO(base64.b64decode(shot)))
+        self.screen.draw(img, 1, self.cols, self.page_rows)
+
+    # ── actions ──
+    def navigate(self, raw):
+        raw = raw.strip()
+        if not raw:
+            return
+        if re.match(r"^[a-z][a-z0-9+.-]*:", raw):
+            url = raw
+        elif re.match(r"^[\w-]+(\.[\w-]+)+(:\d+)?(/\S*)?$", raw) or raw.startswith("localhost"):
+            url = "http://" + raw if raw.startswith("localhost") else "https://" + raw
+        else:
+            url = "https://duckduckgo.com/?q=" + urllib.request.quote(raw)
+        self.tab.call("Page.navigate", url=url)
+        self.status = HELP
+
+    def history(self, step):
+        self.tab.evaluate(f"history.go({step})")
+
+    def mouse(self, kind, x, y, button="left", buttons=0, clicks=1):
+        px, py = self.to_page(x, y)
+        self.tab.call("Input.dispatchMouseEvent", type=kind, x=px, y=py, button=button, buttons=buttons,
+                      clickCount=clicks)
+
+    def key(self, name):
+        mods = 0
+        parts = name.split("+")
+        base = parts[-1] if parts[-1] else "+"
+        for p in parts[:-1]:
+            mods |= MODIFIERS.get(p, 0)
+        if name == "shift+tab":
+            base, mods = "shift+tab", MODIFIERS["shift"]
+        if base in PAGE_KEYS:
+            key, code, vk, text = PAGE_KEYS[base]
+            down = {"type": "keyDown" if text else "rawKeyDown", "key": key, "code": code,
+                    "windowsVirtualKeyCode": vk, "modifiers": mods}
+            if text:
+                down["text"] = text
+            self.tab.call("Input.dispatchKeyEvent", **down)
+            self.tab.call("Input.dispatchKeyEvent", type="keyUp", key=key, code=code, windowsVirtualKeyCode=vk,
+                          modifiers=mods)
+        elif len(base) == 1 and mods & (MODIFIERS["ctrl"] | MODIFIERS["alt"]):  # e.g. ctrl+a, ctrl+c in the page
+            vk = ord(base.upper())
+            self.tab.call("Input.dispatchKeyEvent", type="rawKeyDown", key=base, code=f"Key{base.upper()}",
+                          windowsVirtualKeyCode=vk, modifiers=mods,
+                          commands={"a": ["selectAll"], "c": ["copy"], "x": ["cut"], "v": ["paste"],
+                                    "z": ["undo"]}.get(base, []) if mods & MODIFIERS["ctrl"] else [])
+            self.tab.call("Input.dispatchKeyEvent", type="keyUp", key=base, code=f"Key{base.upper()}",
+                          windowsVirtualKeyCode=vk, modifiers=mods)
+
+    # ── goals ──
+    def start_goal(self, goal):
+        if not os.environ.get("TYPESAFE_API_KEY"):
+            self.status = "TYPESAFE_API_KEY is not set (environment or the plugin's .env)."
+            return
+        url = self.current_url()
+        if not url.startswith("http"):
+            url = "https://duckduckgo.com"
+        self.goal_steps, self.goal_stop = [], threading.Event()
+        self.goal_thread = threading.Thread(target=self.run_goal, args=(url, goal), daemon=True)
+        self.goal_thread.start()
+
+    def run_goal(self, url, goal):
+        agent, status, detail = None, "stopped", ""
+        try:
+            agent = Agent(url, goal)
+            self.apply_viewport(agent.browser)
+            old, self.tab = self.tab, agent.browser  # show the agent's tab live
+            old.close()
+            for state in agent.run():
+                if state["history"]:
+                    h = state["history"][-1]
+                    typed = f' "{h["text"]}"' if h.get("text") else ""
+                    self.goal_steps.append(f"{h['step']}. {h['kind']} {flat(h['action'])[:60]}{typed}")
+                if self.goal_stop.is_set():
+                    break
+            else:
+                status = agent.state["status"]
+        except Exception as err:
+            status, detail = "error", f": {err}"
+        n = len(agent.state["history"]) if agent else 0
+        ms = agent.state["elapsed_ms"] if agent else 0
+        self.status = f"Goal {status} — {n} actions in {ms / 1000:.1f}s{detail}"
+        self.goal_thread = None
+
+    # ── input ──
+    def handle(self, ev):
+        kind = ev[0]
+        if kind == "key" and ev[1] == "ctrl+q":
+            return False
+        if self.goal_thread:
+            if kind == "key" and ev[1] in {"esc", "ctrl+c"}:
+                self.goal_stop.set()
+                self.goal_steps.append("stopping after this step…")
+            return True
+        if self.mode in {"address", "goal"}:
+            return self.handle_edit(ev)
+        if kind == "key":
+            name = ev[1]
+            if name == "ctrl+l":
+                self.mode, self.edit = "address", self.current_url()
+            elif name == "ctrl+g":
+                self.mode, self.edit = "goal", ""
+            elif name in {"alt+left"}:
+                self.history(-1)
+            elif name in {"alt+right"}:
+                self.history(1)
+            elif name in {"ctrl+r", "f5"}:
+                self.tab.call("Page.reload")
+            elif name in {"ctrl+=", "ctrl++", "ctrl+-", "ctrl+0"}:
+                self.zoom = {"ctrl+-": max(0.4, self.zoom / 1.25), "ctrl+0": 1.0}.get(name, min(3.0, self.zoom * 1.25))
+                self.layout()
+            else:
+                self.key(name)
+        elif kind == "text":
+            self.tab.call("Input.insertText", text=ev[1])
+        elif kind == "paste":
+            self.tab.call("Input.insertText", text=ev[1])
+        elif kind == "mouse":
+            _, button, x, y, pressed, moving, _mods = ev
+            if y == 0 and pressed and not moving:  # address bar: ‹ back, › forward, ⟳ reload, else edit
+                if x <= 2:
+                    self.history(-1)
+                elif x <= 4:
+                    self.history(1)
+                elif x <= 6:
+                    self.tab.call("Page.reload")
+                else:
+                    self.mode, self.edit = "address", self.current_url()
+                return True
+            if not (1 <= y <= self.page_rows):
+                return True
+            name = ["left", "middle", "right", "none"][button]
+            mask = {"left": 1, "right": 2, "middle": 4}.get(name, 0)
+            if moving:
+                self.mouse("mouseMoved", x, y, button=name, buttons=mask)
+            else:
+                self.mouse("mousePressed" if pressed else "mouseReleased", x, y, button=name,
+                           buttons=mask if pressed else 0)
+        elif kind == "wheel":
+            _, direction, x, y, _mods = ev
+            px, py = self.to_page(x, max(1, y))
+            self.tab.call("Input.dispatchMouseEvent", type="mouseWheel", x=px, y=py, deltaX=0, deltaY=direction * 120)
+        return True
+
+    def handle_edit(self, ev):
+        kind = ev[0]
+        if kind in {"text", "paste"}:
+            self.edit += ev[1]
+        elif kind == "key":
+            name = ev[1]
+            if name == "esc":
+                self.mode = "page"
+            elif name == "backspace":
+                self.edit = self.edit[:-1]
+            elif name == "ctrl+u":
+                self.edit = ""
+            elif name == "enter":
+                mode, text, self.mode = self.mode, self.edit, "page"
+                self.navigate(text) if mode == "address" else self.start_goal(text)
+        elif kind == "mouse" and ev[4] and ev[3] != 0:
+            self.mode = "page"
+        return True
+
+    # ── loop ──
+    def run(self, start):
+        if start:
+            self.navigate(start)
+        self.closing = False
+        threading.Thread(target=self.render_loop, daemon=True).start()
+        last = 0.0
+        while True:
+            # Drain every pending chunk before drawing, so typing never waits on a frame.
+            chunks = []
+            try:
+                chunks.append(self.t.events.get(timeout=0.03))
+                while True:
+                    chunks.append(self.t.events.get_nowait())
+            except Exception:
+                pass
+            events = term.parse("".join(chunks)) if chunks else []
+            for ev in events:
+                try:
+                    if not self.handle(ev):
+                        return
+                except Exception as err:
+                    self.status = f"{type(err).__name__}: {err}"
+            if events:
+                self.bar()  # instant feedback for the address/goal line
+            if term.size() != (self.cols, self.rows):
+                self.layout()
+            if time.monotonic() - last > 1.0:  # keep the URL current after in-page navigation
+                last = time.monotonic()
+                self.bar()
+
+    def render_loop(self):
+        """Capture and draw frames off the input thread; ~10 fps, idle when the page is still."""
+        while not self.closing:
+            started = time.perf_counter()
+            self.frame()
+            if DEBUG_LOG:
+                with open(DEBUG_LOG, "a", encoding="utf-8") as f:
+                    f.write(f"frame {1000 * (time.perf_counter() - started):.0f}ms\n")
+            time.sleep(max(0.02, 0.1 - (time.perf_counter() - started)))
 
 
 def flat(text):
     return re.sub(r"\s+", " ", str(text)).strip()
 
 
-class Session:
-    def __init__(self):
-        self.browser = Browser(HOME_URL)
-        self.front()
-        self.page = None
-        self.show_shot = True
-        self.show_text = False
-        self.note = ""
-
-    def front(self):
-        """jev-ultrafast opens tabs in the background; screenshots of a hidden tab can hang."""
-        cdp("Target.activateTarget", targetId=self.browser.target)
-
-    def observe(self):
-        self.page = self.browser.observe(screenshot=self.show_shot)
-
-    def navigate(self, url):
-        if not re.match(r"^[a-z][a-z0-9+.-]*:", url):
-            url = "https://" + url
-        self.browser.call("Page.navigate", url=url)
-        self.settle()
-
-    def settle(self):
-        deadline = time.monotonic() + 15
-        while time.monotonic() < deadline:
-            try:
-                if self.browser.evaluate("document.readyState") == "complete":
-                    break
-            except StalePage:
-                pass
-            time.sleep(0.05)
-        self.observe()
-
-    def element(self, n):
-        action = next((a for a in self.page["actions"] if a.get("id") == f"e{n}"), None)
-        if not action:
-            raise ValueError(f"No element [{n}] on this page")
-        return action
-
-    def press_enter(self):
-        for kind in ("keyDown", "keyUp"):
-            self.browser.call("Input.dispatchKeyEvent", type=kind, key="Enter", code="Enter",
-                              windowsVirtualKeyCode=13, **({"text": "\r"} if kind == "keyDown" else {}))
-        self.wait_change(self.page["fingerprint"])
-
-    def act(self, action, text=None):
-        self.browser.act(action, self.page, text=text)
-        self.wait_change(self.page["fingerprint"])
-
-    def wait_change(self, before):
-        # A click may start a navigation a moment later; wait briefly for the page to change.
-        deadline = time.monotonic() + 1.5
-        while time.monotonic() < deadline:
-            time.sleep(0.1)
-            try:
-                if not self.browser.fresh(self.page):
-                    break
-            except StalePage:
-                break
-        self.settle()
-        if self.page["fingerprint"] == before:
-            self.note = "The page didn't change."
-
-    def scroll(self, direction):
-        action = next((a for a in self.page["actions"] if a["id"] == f"scroll_{direction}"), None)
-        if not action:
-            raise ValueError(f"Can't scroll {direction}")
-        self.act(action)
-
-    def run_goal(self, goal):
-        """Hand the goal to Jev in a fresh tab at the current URL; adopt that tab afterwards."""
-        if not os.environ.get("TYPESAFE_API_KEY"):
-            raise ValueError("TYPESAFE_API_KEY is not set (environment or the plugin's .env).")
-        url = self.page["url"] if self.page and self.page["url"] != HOME_URL else "https://www.google.com"
-        agent = Agent(url, goal)
-        cdp("Target.activateTarget", targetId=agent.browser.target)  # let the user watch it in Chrome
-        print(f"\n{BOLD}Goal:{RESET} {goal}  {DIM}(Ctrl+C to stop){RESET}")
-        status, detail = "stopped", ""
-        try:
-            for state in agent.run():
-                status = state["status"]
-                if state["history"]:
-                    h = state["history"][-1]
-                    typed = f' = "{h["text"]}"' if h.get("text") else ""
-                    print(f"  {h['step']:>2}. {h['kind']:<6} {h['action'][:70]}{typed}  "
-                          f"{DIM}p={h['probability']:.2f} {h['elapsed_ms']}ms{RESET}")
-        except KeyboardInterrupt:
-            print("  stopped by you")
-        except Exception as err:  # model/provider/browser errors end the run, not the session
-            status, detail = "error", f" — {type(err).__name__}: {err}"
-        old, self.browser = self.browser, agent.browser
-        old.close()
-        self.front()
-        steps = [f"{h['step']}. {h['kind']} {h['action'][:40]}" for h in agent.state["history"][-5:]]
-        self.note = (f"Goal finished: {status} in {agent.state['elapsed_ms']} ms, "
-                     f"{len(agent.state['history'])} actions{detail}" + "".join(f"\n  {s}" for s in steps))
-        self.observe()
-
-    def render(self):
-        cols, rows = shutil.get_terminal_size((100, 40))
-        p = self.page
-        out = ["\x1b[2J\x1b[H", f"{BOLD}{flat(p['title'])[:cols - 2] or '(untitled)'}{RESET}", f"{DIM}{p['url'][:cols]}{RESET}"]
-        elements = [a for a in p["actions"] if a["id"].startswith("e")]
-        if self.show_shot and p.get("screenshot"):
-            out.append(halfblocks(p["screenshot"], cols, max(6, rows - 14)))
-        if self.show_text:
-            out.append(re.sub(r"\s+", " ", p["text"])[: cols * 8])
-        out.append("")
-        note = [line[:cols] for line in self.note.splitlines()]
-        # Every line below is one row: labels are flattened and cut to the pane width.
-        budget = max(3, rows - len("\n".join(out).splitlines()) - len(note) - 3)
-        shown = elements[:budget] if len(elements) <= budget else elements[: budget - 1]
-        for a in shown:
-            value = f" = {flat(a['value'])}" if a.get("value") else ""
-            out.append(f"[{a['id'][1:]:>3}] {a['kind']:<6} {flat(a['label'])}{value[:30]}"[:cols])
-        if len(shown) < len(elements):
-            out.append(f"{DIM}... {len(elements) - len(shown)} more (hide the image with 'shot'){RESET}")
-        out += [f"{DIM}{line}{RESET}" for line in note]
-        out.append(f"{DIM}{'url | n=click | type n text | enter | up/down | back | reload | shot | text | do <goal> | q'[:cols]}{RESET}")
-        print("\n".join(out))
-
-
-HELP_URL = re.compile(r"^([a-z][a-z0-9+.-]*://\S+|[\w-]+(\.[\w-]+)+(/\S*)?)$", re.I)
-
-
-def handle(s, line):
-    s.note = ""
-    if HELP_URL.match(line):
-        return s.navigate(line)
-    cmd, _, rest = line.partition(" ")
-    cmd = cmd.lower()
-    if cmd.isdigit():
-        return s.act(s.element(int(cmd)))
-    if cmd in {"go", "open"}:
-        return s.navigate(rest.strip())
-    if cmd == "type":
-        n, _, text = rest.strip().partition(" ")
-        action = s.element(int(n))
-        if action["kind"] != "fill":
-            raise ValueError(f"[{n}] is not a text field")
-        return s.act(action, text=text)
-    if cmd == "enter":
-        return s.press_enter()
-    if cmd in {"up", "down"}:
-        return s.scroll(cmd)
-    if cmd == "back":
-        s.browser.evaluate("history.back()")
-        time.sleep(0.3)
-        return s.settle()
-    if cmd == "reload":
-        s.browser.call("Page.reload")
-        time.sleep(0.3)
-        return s.settle()
-    if cmd == "shot":
-        s.show_shot = not s.show_shot
-        return s.observe()
-    if cmd == "text":
-        s.show_text = not s.show_text
-        return None
-    if cmd in {"do", "?"}:
-        return s.run_goal(rest.strip())
-    return s.run_goal(line)  # anything else is a goal
-
-
 def main():
-    s = Session()
-    start = " ".join(sys.argv[1:]).strip() or os.environ.get("JEV_START_URL", "")
-    if start:
-        s.navigate(start)
-    else:
-        s.observe()
-    while True:
-        s.render()
+    start = (" ".join(sys.argv[1:]).strip() or os.environ.get("JEV_START_URL")
+             or os.environ.get("JEV_HOME", "https://duckduckgo.com"))
+    with term.RawTerminal() as t:
+        browser = TerminalBrowser(t)
         try:
-            line = input("> ").strip()
-        except (EOFError, KeyboardInterrupt):
-            break
-        if line.lower() in {"q", "quit", "exit"}:
-            break
-        if not line:
-            s.observe()
-            continue
-        try:
-            handle(s, line)
-        except KeyboardInterrupt:
-            s.note = "interrupted"
-        except Exception as err:
-            s.note = str(err)
+            browser.run(start)
+        finally:
+            browser.screen.reset()
             try:
-                s.observe()
+                browser.tab.close()
             except Exception:
                 pass
-    s.browser.close()
 
 
 if __name__ == "__main__":

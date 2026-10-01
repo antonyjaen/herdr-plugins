@@ -2,7 +2,7 @@ id = "antonyjaen.jev-browser"
 name = "Jev Browser"
 version = "0.1.0"
 min_herdr_version = "0.9.0"
-description = "A browser in a herdr pane: dedicated Chrome rendered as truecolor text, driven by hand or by goals (TypeSafe Jev + a small LLM)."
+description = "A terminal browser: headless Chrome drawn in the pane (kitty graphics or truecolor half-blocks), mouse + keyboard, plus goals run by TypeSafe Jev."
 platforms = ["linux", "macos", "windows"]
 
 # Requires uv, node and Google Chrome/Chromium. Keys: TYPESAFE_API_KEY, plus

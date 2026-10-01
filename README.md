@@ -50,24 +50,28 @@ description = "Supabase menu"
 
 ## Jev Browser
 
-**Jev Browser: open** splits a browser pane beside the focused pane. It drives
-a dedicated Chrome (its own profile under the plugin state dir, debugging port
-on 127.0.0.1) and shows the page as truecolor half-block text plus a numbered
-list of the page's controls. Type at the prompt:
+A browser that lives in the terminal. **Jev Browser: open** splits a pane
+beside the focused one; a headless Chrome (own profile under the plugin state
+dir, debugging port on 127.0.0.1, no window) renders the page straight into
+the pane: real pixels via kitty graphics when herdr's host terminal supports
+them (Ghostty, Kitty, WezTerm on macOS/Linux), truecolor half-blocks
+everywhere else, including Windows. Click, drag, scroll and type in the page
+as usual.
 
-| Input | Does |
+| Key | Does |
 | --- | --- |
-| `example.com`, `https://…` | Open the URL |
-| `3` | Click element [3] |
-| `type 2 Ada Lovelace`, `enter` | Fill field [2], press Enter |
-| `up` / `down`, `back`, `reload` | Scroll and navigate |
-| `shot`, `text` | Toggle the page image / page text |
-| `do <goal>` or any other sentence | Let the agent carry out the goal |
+| Ctrl+L, or click the address | Edit the address (URL or search words), Enter to go |
+| Ctrl+G | Give the agent a goal; Esc stops it after the current step |
+| Alt+← / Alt+→, or ‹ › | Back / forward |
+| Ctrl+R, or ⟳ | Reload |
+| Ctrl+= / Ctrl+- / Ctrl+0 | Zoom (narrower viewport = bigger text) |
+| Ctrl+Q | Quit |
 
 Goals run on [jev-ultrafast](https://github.com/browser-use/jev-ultrafast):
 [TypeSafe Jev](https://docs.typesafe.ai/introduction) picks each action and
 element from the page's control list, and a small OpenAI-compatible LLM writes
-text only when a field needs typing. Ctrl+C stops a run.
+text only when a field needs typing. You watch it work in the pane.
+`JEV_HOME` sets the start page (default DuckDuckGo).
 
 Requires [`uv`](https://docs.astral.sh/uv/), `node` and Google Chrome or
 Chromium (set `JEV_CHROME` if it isn't found). Put keys in the environment or
@@ -137,8 +141,8 @@ overwriting, and accepts plain relative paths only.
 Jev Browser's Chrome profile is separate from your everyday one, but goals act
 on real sites: the agent clicks and types for you, and only stops at `DONE`,
 `BLOCKED`, Ctrl+C or its step budget. Chrome's debugging port listens on
-127.0.0.1 without authentication while that Chrome window is open, so any
-local program can drive it.
+127.0.0.1 without authentication while that Chrome is running, so any local
+program can drive it.
 
 ## License
 
