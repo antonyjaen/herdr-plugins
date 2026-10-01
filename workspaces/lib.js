@@ -193,22 +193,27 @@ async function menu(opts) {
   let sel = 0, lines = [], state = "idle", running = null, scroll = 0;
 
   const draw = () => {
-    const cols = Math.max(60, process.stdout.columns || 100), rows = Math.max(16, process.stdout.rows || 30);
+    // Never touch the last column: a full-width row would autowrap and shift everything below.
+    const cols = (process.stdout.columns || 100) - 1, rows = process.stdout.rows || 30;
     const out = [`${ESC}?25l${BG(C.canvas)}${ESC}2J`];
-    // dotted canvas, like zoetrope's graph background
-    for (let r = 1; r < rows - 1; r += 2) out.push(at(r, 2) + BG(C.canvas) + FG("#2a2a2a") + " .".repeat(Math.floor((cols - 3) / 2)).slice(0, cols - 3) + RESET);
+    const dots = (row, from, to) => {
+      if (to - from > 1) out.push(at(row, from) + BG(C.canvas) + FG("#2a2a2a") + " .".repeat(Math.ceil((to - from) / 2)).slice(0, to - from) + RESET);
+    };
 
     // header cards
     const cards = opts.cards();
     let x = 1;
     for (const c of cards) {
-      const w = Math.min(Math.max(visible(c.title).length, visible(c.sub).length) + 6, cols - x - 1, 46);
+      const w = Math.min(Math.max(visible(c.title).length, visible(c.sub).length) + 6, cols - x, 46);
       if (w < 12) break;
       box(out, 1, x, w, 4);
       text(out, 2, x + 2, `${FG(c.glyphColor || C.ok)}${c.glyph} ${RESET}${BG(C.surface)}${FG(C.text)}${BOLD}${c.title}${RESET}`, w - 4);
       text(out, 3, x + 2, `${FG(c.subColor || C.subtle)}${c.sub}${RESET}`, w - 4);
       x += w + 2;
     }
+    // dotted canvas, like zoetrope's graph background, only where nothing is drawn
+    for (const r of [1, 3]) dots(r, x, cols);
+    dots(5, 1, cols);
 
     // actions panel (left) and output panel (right)
     const top = 6, height = rows - top - 2;
@@ -236,9 +241,11 @@ async function menu(opts) {
       done: ["✓ DONE", C.badge, C.ok], failed: ["✗ FAILED", C.badge, C.err] }[state];
     const left = `${badge(opts.title, C.accent, "#121212")} ${badge(...st)} ${BG(C.canvas)}${FG(C.text)}${BOLD}${item.label}${RESET}`;
     const hints = `${FG(C.subtle)}${items.length} actions · ↑↓ select · enter run · pgup/pgdn scroll · q quit${RESET}`;
-    out.push(at(rows - 1, 0) + BG(C.canvas) + padTo(left + `${BG(C.canvas)}  ` + hints, cols) + RESET);
+    out.push(at(rows - 1, 0) + BG(C.canvas) + padTo(cutVisible(left + `${BG(C.canvas)}  ` + hints, cols), cols) + RESET);
     process.stdout.write(out.join(""));
   };
+  // Tabs opened in the background start at one size and get resized when shown.
+  process.stdout.on("resize", () => draw());
 
   const io = {
     print: (s) => {
@@ -316,9 +323,9 @@ async function pick(opts) {
     return opts.entries.filter((e) => opts.render(e).slice(1, 3).join(" ").toLowerCase().includes(q));
   };
   const draw = (list) => {
-    const cols = Math.max(50, process.stdout.columns || 100), rows = Math.max(8, process.stdout.rows || 24);
+    const cols = (process.stdout.columns || 100) - 1, rows = process.stdout.rows || 24;
     const out = [`${ESC}?25l${BG(C.canvas)}${ESC}2J`];
-    const w = cols - 2, room = rows - 4;
+    const w = cols - 1, room = rows - 4;
     box(out, 0, 1, w, rows - 1, { rounded: true, title: opts.title });
     text(out, 1, 3, `${FG(C.accent)}${BOLD}› ${RESET}${BG(C.surface)}${FG(C.text)}${query}${FG(C.accent)}▏${RESET}`, w - 4);
     const nameW = Math.min(28, Math.max(8, ...opts.entries.map((e) => opts.render(e)[1].length)) + 2);
@@ -332,9 +339,10 @@ async function pick(opts) {
     });
     if (!list.length) text(out, 2, 3, `${FG(C.subtle)}no match${RESET}`, w - 4);
     const badge = `${BG(C.accent)}${FG("#121212")}${BOLD} ${opts.title} ${RESET}`;
-    out.push(at(rows - 1, 0) + BG(C.canvas) + padTo(`${badge} ${BG(C.canvas)}${FG(C.subtle)}${list.length} of ${opts.entries.length} · type to filter · ↑↓ select · enter switch · esc close${RESET}`, cols) + RESET);
+    out.push(at(rows - 1, 0) + BG(C.canvas) + padTo(cutVisible(`${badge} ${BG(C.canvas)}${FG(C.subtle)}${list.length} of ${opts.entries.length} · type to filter · ↑↓ select · enter switch · esc close${RESET}`, cols), cols) + RESET);
     process.stdout.write(out.join(""));
   };
+  process.stdout.on("resize", () => draw(matches()));
 
   startRaw();
   for (;;) {
