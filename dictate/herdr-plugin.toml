@@ -1,0 +1,30 @@
+id = "antonyjaen.dictate"
+name = "Dictate"
+version = "0.1.0"
+min_herdr_version = "0.9.0"
+description = "Speech-to-text into the focused pane: a small widget pane with a click-to-toggle microphone button; phrases are transcribed locally with faster-whisper."
+platforms = ["linux", "macos", "windows"]
+
+# Requires node, plus python with faster-whisper, sounddevice and numpy
+# (`pip install faster-whisper sounddevice numpy`). Transcription is local;
+# nothing leaves the machine. Settings: `<plugin config dir>/dictate.json`.
+
+[[panes]]
+id = "widget"
+title = "Dictate"
+placement = "split"
+command = ["node", "dictate.js", "widget"]
+
+[[actions]]
+id = "toggle"
+title = "Dictate: toggle"
+description = "Open the dictation widget under the focused pane, or start/stop recording when it is already open."
+contexts = ["workspace", "pane", "global"]
+command = ["node", "dictate.js", "toggle"]
+
+[[actions]]
+id = "close"
+title = "Dictate: close widget"
+description = "Stop recording and close the dictation widget."
+contexts = ["workspace", "pane", "global"]
+command = ["node", "dictate.js", "close"]

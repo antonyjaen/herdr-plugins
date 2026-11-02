@@ -10,6 +10,7 @@ focused pane, plus declarative workspace layouts.
 herdr plugin install antonyjaen/herdr-plugins/supabase
 herdr plugin install antonyjaen/herdr-plugins/vercel
 herdr plugin install antonyjaen/herdr-plugins/workspaces
+herdr plugin install antonyjaen/herdr-plugins/dictate
 ```
 
 Requires `node` plus the matching CLI on `PATH`:
@@ -109,3 +110,34 @@ overwriting, and accepts plain relative paths only.
 ## License
 
 MIT
+
+
+## Dictate
+
+Speech-to-text into whatever pane you are working in, fully local (no API key:
+[faster-whisper](https://github.com/SYSTRAN/faster-whisper) on the CPU). Requires `node` and a
+`python` with `pip install faster-whisper sounddevice numpy`.
+
+**Dictate: toggle** opens a small widget pane under the focused pane with one button. Click it
+(or press Enter/Space, or run the action again from its key) to start listening; speak; click
+again to stop. Each phrase, cut on silence, is typed into the target pane with `herdr pane
+send-text` — text only, never Enter, so you review and submit. `t` re-targets the widget to the
+currently focused pane; `q` closes it. **Dictate: close widget** does the same from a key.
+
+```toml
+[[keys.command]]
+key = "prefix+alt+d"
+type = "plugin_action"
+command = "antonyjaen.dictate.toggle"
+description = "Dictate: toggle"
+```
+
+Settings live in `$(herdr plugin config-dir antonyjaen.dictate)/dictate.json`:
+
+```json
+{ "python": "python", "model": "small", "language": "auto", "silenceMs": 800, "device": "" }
+```
+
+`model` is any faster-whisper size (`base`, `small`, `medium`, `large-v3-turbo`; the first use of
+a size downloads it), `language` an ISO code or `auto`, `device` a sounddevice index or name
+substring (empty = system default microphone).
